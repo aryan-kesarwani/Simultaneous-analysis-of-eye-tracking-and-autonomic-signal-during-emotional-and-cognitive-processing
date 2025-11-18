@@ -1,0 +1,2543 @@
+function ep_scanCont
+% ep_scanCont - ep_scanCont -
+% Presents continuous data for manual editing.
+%
+%Input:
+%
+
+%History
+%  by Joseph Dien (1/24/16)
+%  jdien07@mac.com
+%
+% modified 5/4/16 JD
+% 2D plot now excludes bad channels.
+%
+% modified 9/6/16 JD
+% Added temporally arranged event list for navigating to individual events.
+% Event lists for setting boundaries of Redisplay are now alphabetic order.
+% Global bad channels marked with faded line rather than red zone.
+%
+% bugfix 9/21/16 JD
+% Fixed bad channels being displayed as still bad.
+% Fixed crash when clicking on "- Channels"
+%
+% modified 9/22/16 JD
+% Scaling of non-EEG channels adjusted so variations are visible.
+%
+% modified 11/4/16 JD
+% Upgraded controls for navigating and examining events.
+% Upgraded eye-position figures.
+%
+% bugfix & modified 11/26/16 JD
+% Added support for .calibration field
+% Fixed crash when saving edits in View>Scan for continuous data.
+% Reversed + and - buttons to comply with norms for such buttons.
+%
+% bugfix 2/3/17 JD
+% Accommodated the datasets having differing channels.
+%
+% modified 4/21/17 JD
+% Added toggle for edit mode.
+%
+% bugfix 6/16/17 JD
+% Fixed conversion to spectral density dividing by bin width rather than sqrt(bin width).
+%
+% bugfix 5/4/18 JD
+% Fixed crash when data has channels without electrode coordinates.
+% Fixed crash in View Scan when clicking for plot point without first advancing the plotting window.
+%
+% modified 11/3/18 JD
+% Added support for EEGlab derived Cartesian coordinates from standard-10-5-cap385.ced and using EEGlab's more precise transform for cartesian coordinates from .sfp file.
+%
+% bugfix 1/13/19 JD
+% Fixed crash in View Scan when there is only one channel in the dataset.
+%
+% bugfix 9/7/19 JD
+% Fixed crash in View Scan when toggling off edit mode and there are no bad data visible.
+%
+% bugfix 10/10/19 JD
+% Fixed crash due to rounding error when the sampling rate is high (e.g., 1024).
+%
+% modified 2/14/20 JD
+% 3D head now uses improved method for co-registering eloc coordinates, based on Oostenveld's Standard-10-5-Cap385.sfp file.
+%
+% modified 4/13/20 JD
+% ep_saveEPdataset now handles replacing existing EPdataset entries.
+%
+% modified 4/22/20 JD
+% Added support for up to eight colors in waveform figures.
+%
+% modified 10/19/20 JD
+% Added support for preferences to manually specify screen size information.
+%
+% bugfix 3/9/22 JD
+% Fixed mucked up baseline correction when waveforms only showing a subset of the channels.
+%
+% bugfix 11/20/23 JD
+% Fixed crash when clicking channel name to denote bad channel and channels are zoomed in and scrolled down.
+%
+% modified 1/27/25 JD
+% Added support for video.
+% Added popupmenu controls for selecting the content of the topomaps, which can now be any of the displayed datasets.
+% Added support for continuous files having individualized electrode coordinates.
+% The first dataset is no longer treated specially.  The current dataset for editing and events is now set by a popupmenu.
+% Improved movie function.
+% Added manual controls to time marker.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%     Copyright (C) 1999-2025  Joseph Dien
+%
+%     This program is free software: you can redistribute it and/or modify
+%     it under the terms of the GNU General Public License as published by
+%     the Free Software Foundation, either version 3 of the License, or
+%     (at your option) any later version.
+%
+%     This program is distributed in the hope that it will be useful,
+%     but WITHOUT ANY WARRANTY; without even the implied warranty of
+%     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+%     GNU General Public License for more details.
+%
+%     You should have received a copy of the GNU General Public License
+%     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+global EPdataset EPscanCont EPmain EPtictoc
+
+ep_tictoc('begin');
+
+scrsz = EPmain.scrsz;
+
+EPmain.handles.scanContData = figure('Name', 'Scan Continuous Data', 'NumberTitle', 'off', 'Position',[scrsz(1)+EPmain.panesize(1)+70 scrsz(2) scrsz(3)-(EPmain.panesize(1)+70) scrsz(4)], 'MenuBar', 'none', 'CloseRequestFcn',@confirmCloseScan);
+colormap jet;
+drawnow
+
+if ~isempty(EPdataset.dataset(EPmain.view.dataset(1)).freqNames)
+    EPscanCont.numColors=1;
+    EPscanCont.dataType='TFT';
+    EPscanCont.startBins=min(find(EPmain.view.startHz <= EPdataset.dataset(EPmain.view.dataset(1)).freqNames));
+    EPscanCont.lastBins=min(find(EPmain.view.endHz <= EPdataset.dataset(EPmain.view.dataset(1)).freqNames));
+    EPscanCont.spacing=EPscanCont.lastBins-EPscanCont.startBins+1;
+    EPscanCont.FFTunits=EPmain.view.FFTunits;
+    if EPscanCont.FFTunits==1
+        EPscanCont.spacing=EPscanCont.spacing*2; %complex numbers
+    end
+    EPscanCont.freqList=cellstr(num2str(round(EPdataset.dataset(EPmain.view.dataset(1)).freqNames)));
+    EPscanCont.freqList{end+1}='all';
+    EPscanCont.freqShow=length(EPscanCont.freqList);
+    EPscanCont.freqPos=1;
+else
+    EPscanCont.numColors=EPmain.numColors;
+    EPscanCont.dataType='VLT';
+    EPscanCont.spacing=100; %+/-microvolt space for each waveform
+    EPscanCont.freqList={'none'};
+    EPscanCont.freqShow=length(EPscanCont.freqList);
+    EPscanCont.freqPos=1;
+end
+
+EPscanCont.edited=zeros(EPscanCont.numColors,1);
+EPscanCont.done=0;
+
+EPscanCont.chanNames=cell(0);
+EPscanCont.chanTypes=cell(0);
+EPscanCont.chanIndex=cell(EPscanCont.numColors,1); %index for when channel names of superimposed datasets are in different orders.
+EPscanCont.numData=0;
+EPscanCont.currentColor=[]; %current color for event labels and editing and frequency
+for iColor=1:EPscanCont.numColors
+    ep_tictoc;if EPtictoc.stop;return;end
+    if EPmain.view.dataset(iColor) <= length(EPdataset.dataset)
+        if isempty(EPscanCont.currentColor)
+            EPscanCont.currentColor=iColor;
+        end
+        EPscanCont.numData=EPscanCont.numData+1;
+        ep_tictoc('ioStart');
+        EPdata=ep_loadEPdataset(EPmain.view.dataset(iColor));
+        ep_tictoc('ioFinish');
+        EPscanCont.pca{iColor}=EPdata.pca;
+        EPdata=rmfield(EPdata,'pca'); %pca field contents too variable to merge into one structure so temporarily remove
+        EPscanCont.EPdata(iColor)=EPdata;
+        for iChan=1:length(EPdata.chanNames)
+            theChan=find(strcmp(EPdata.chanNames{iChan},EPscanCont.chanNames));
+            if isempty(theChan)
+                EPscanCont.chanNames{end+1}=EPdata.chanNames{iChan};
+                EPscanCont.chanTypes{end+1}=EPdata.chanTypes{iChan};
+                EPscanCont.chanIndex{iColor}(iChan)=length(EPscanCont.chanNames);
+            else
+                EPscanCont.chanIndex{iColor}(iChan)=theChan;
+            end
+        end
+        EPscanCont.eventList{iColor}=cell(length(EPscanCont.EPdata(iColor).events{1}),1); %list of events
+        EPscanCont.starredSampleEventList{iColor}=cell(0); %list of events in chronological order
+        EPscanCont.starredEventList{iColor}=cell(0); %list of events in alphabetic order
+
+        EPscanCont.epochMarks{iColor}=zeros(length(EPscanCont.EPdata(iColor).timeNames),1); %provides the epoch boundary marks
+        EPscanCont.epochMarks{iColor}(EPscanCont.EPdata(iColor).Fs:EPscanCont.EPdata(iColor).Fs:end,1)=1; %add boundary marks
+    end
+end
+
+EPscanCont.firstEvent=1; %choice of event for start of new display (from alphabetically-ordered event list)
+EPscanCont.lastEvent=1; %choice of event for end of new display (from alphabetically-ordered event list)
+EPscanCont.currentEvent=[]; %choice of event to center on (from chronologically-ordered event list)
+
+EPscanCont.numChans=length(EPscanCont.chanNames);
+EPscanCont.numPoints=length(EPscanCont.EPdata(EPscanCont.currentColor).timeNames);
+EPscanCont.sampleSize=1000/EPscanCont.EPdata(EPscanCont.currentColor).Fs;
+EPscanCont.xGraphMin=min(EPscanCont.numPoints,ceil(EPscanCont.EPdata(EPscanCont.currentColor).Fs)); %minimum number of time points to be displayable
+EPscanCont.displayLength=min(EPscanCont.numPoints,ceil(EPscanCont.EPdata(EPscanCont.currentColor).Fs)*4); %start at displaying 4 seconds worth of data
+EPscanCont.plotPoint=1; %start at displaying 4 seconds worth of data
+EPscanCont.scaling=zeros(EPscanCont.numChans,1); %scaling for waveforms.  For EEG, scaling is one.
+EPscanCont.displayChans=[1:EPscanCont.numChans]; %channels to be displayed
+EPscanCont.displayPoints=[1:EPscanCont.displayLength]; %points to be displayed
+EPscanCont.xGraphPos=0; %current x position of the graph from 0 to 1
+EPscanCont.yGraphPos=0; %current y position of the graph from 0 to 1
+EPscanCont.currentData=[]; %data to be displayed
+EPscanCont.freqData=[]; %freq data to be displayed
+EPscanCont.plotLineEpoch=0; %epoch of plot line (excess points counted as an epoch)
+EPscanCont.freqBins=[1:40];
+EPscanCont.freqLines=[4 8 12 20];
+EPscanCont.lineStyles=cell(EPscanCont.numChans,1);
+EPscanCont.currentkey=1;
+
+for iColor=1:EPscanCont.numColors
+    EPscanCont.globalBadChans{iColor}=zeros(EPscanCont.numChans,1);
+    EPscanCont.trialBadChans{iColor}=[];
+end
+
+EPscanCont.chanList=EPscanCont.chanNames;
+EPscanCont.chanList{end+1}='none';
+EPscanCont.chanShow=length(EPscanCont.chanList);
+EPscanCont.ETlatency=0;
+
+%prepare to display list of event names
+for iColor=1:EPscanCont.numColors
+    ep_tictoc;if EPtictoc.stop;return;end
+    if EPmain.view.dataset(iColor) <= length(EPdataset.dataset)
+        sampleList=zeros(length(EPscanCont.EPdata(iColor).events{1}),1);
+        for iEvent=1:length(EPscanCont.EPdata(iColor).events{1})
+            ep_tictoc;if EPtictoc.stop;return;end
+            theEventValue=EPscanCont.EPdata(iColor).events{1}(iEvent).value;
+            theEventSample=EPscanCont.EPdata(iColor).events{1}(iEvent).sample;
+            sampleList(iEvent,1)=theEventSample;
+            keyData=EPscanCont.EPdata(iColor).events{1}(iEvent).keys;
+            keyStim=[];
+            for iKey=1:length(keyData)
+                if strcmp(keyData(iKey).code,'stim')
+                    keyStim=keyData(iKey).data;
+                end
+            end
+            if ~isempty(theEventValue)
+                eventNum=sprintf('%04d',(length(find([EPscanCont.EPdata(iColor).events{1}(strcmp(theEventValue,{EPscanCont.EPdata(iColor).events{1}.value})).sample]<=theEventSample))));
+                EPscanCont.eventList{iColor}{iEvent}=[theEventValue '(' eventNum ')' keyStim];
+            else
+                theEventType=EPscanCont.EPdata(iColor).events{1}(iEvent).type;
+                if ~isempty(theEventType)
+                    eventNum=sprintf('%04d',(length(find([EPscanCont.EPdata(iColor).events{1}(strcmp(theEventType,{EPscanCont.EPdata(iColor).events{1}.value})).sample]<=theEventSample))));
+                    EPscanCont.eventList{iColor}{iEvent}=[theEventType '(' eventNum ')' keyStim];
+                else
+                    EPscanCont.eventList{iColor}{iEvent}='null_event';
+                end
+            end
+        end
+
+        [B EPscanCont.alphabetEventOrder{iColor}]=sort(EPscanCont.eventList{iColor});
+        [B EPscanCont.sampleEventOrder{iColor}]=sort(sampleList);
+
+        if isempty(EPscanCont.eventList{iColor})
+            EPscanCont.starredSampleEventList{iColor}='none';
+            EPscanCont.starredEventList{iColor}='none';
+        else
+            EPscanCont.starredSampleEventList{iColor}=EPscanCont.eventList{iColor};
+            EPscanCont.starredEventList{iColor}=EPscanCont.eventList{iColor};
+        end
+    end
+end
+
+%prepare to display stimulus screens in eye-plot figures
+EPscanCont.stimList=cell(EPscanCont.numColors,1);
+for iColor=1:EPscanCont.numColors
+    ep_tictoc;if EPtictoc.stop;return;end
+    if EPmain.view.dataset(iColor) <= length(EPdataset.dataset)
+        for iEvent=1:length(EPscanCont.EPdata(iColor).events{1})
+            ep_tictoc;if EPtictoc.stop;return;end
+            keyData=EPscanCont.EPdata(iColor).events{1}(iEvent).keys;
+            for iKey=1:length(keyData)
+                if strcmp(keyData(iKey).code,'stim')
+                    keyStim=keyData(iKey).data;
+                    if any(strcmp(keyStim,{EPscanCont.EPdata(iColor).stims.name}))
+                        EPscanCont.stimList{iColor}(end+1).sample=EPscanCont.EPdata(iColor).events{1}(iEvent).sample;
+                        EPscanCont.stimList{iColor}(end).stim=find(strcmp(keyStim,{EPscanCont.EPdata(iColor).stims.name}));
+                    end
+                end
+            end
+        end
+    end
+end
+
+EPscanCont.EYEsize=cell(EPscanCont.numColors,1);
+EPscanCont.SACCsize=cell(EPscanCont.numColors,1);
+for iColor=1:EPscanCont.numColors
+    if EPmain.view.dataset(iColor) <= length(EPdataset.dataset)
+        EPscanCont.XEYchan{iColor}=find(strcmp('XEY',EPscanCont.chanTypes));
+        if length(EPscanCont.XEYchan{iColor}) > 1
+            EPscanCont.XEYchan{iColor}=EPscanCont.XEYchan{iColor}(1);
+        end
+        EPscanCont.YEYchan{iColor}=find(strcmp('YEY',EPscanCont.chanTypes));
+        if length(EPscanCont.YEYchan{iColor}) > 1
+            EPscanCont.YEYchan{iColor}=EPscanCont.YEYchan{iColor}(1);
+        end
+        if ~isempty(EPscanCont.XEYchan) && ~isempty(EPscanCont.YEYchan) && ~isempty(EPscanCont.XEYchan{iColor}) && ~isempty(EPscanCont.YEYchan{iColor})
+            EPscanCont.EYEsize{iColor}=max([max(abs(EPscanCont.EPdata(iColor).data(find(EPscanCont.chanIndex{iColor}==EPscanCont.XEYchan{iColor}),:))) max(abs(EPscanCont.EPdata(iColor).data(find(EPscanCont.chanIndex{iColor}==EPscanCont.YEYchan{iColor}),:)))]);
+            if isfield(EPscanCont.EPdata(iColor).calibration,'ET') && isfield(EPscanCont.EPdata(iColor).calibration.ET,'Xzero') && isfield(EPscanCont.EPdata(iColor).calibration.ET,'Yzero') && isfield(EPscanCont.EPdata(iColor).calibration.ET,'Xscale') && isfield(EPscanCont.EPdata(iColor).calibration.ET,'Yscale')
+                EPscanCont.eyeCenterX{iColor}=EPscanCont.EPdata(iColor).calibration.ET.Xzero;
+                EPscanCont.eyeCenterY{iColor}=EPscanCont.EPdata(iColor).calibration.ET.Yzero;
+                EPscanCont.eyeScaleX{iColor}=EPscanCont.EPdata(iColor).calibration.ET.Xscale;
+                EPscanCont.eyeScaleY{iColor}=EPscanCont.EPdata(iColor).calibration.ET.Yscale;
+            else
+                if ~isempty(EPscanCont.stimList{iColor}) %SMI POR field is already in pixels of the stimuli jpegs.
+                    EPscanCont.eyeScaleX{iColor}=max(size(EPscanCont.EPdata(iColor).stims(1).image));
+                    EPscanCont.eyeScaleY{iColor}=-max(size(EPscanCont.EPdata(iColor).stims(1).image)); %need to flip SMI coordinates
+                    EPscanCont.eyeCenterX{iColor}=round(size(EPscanCont.EPdata(iColor).stims(1).image,2)/2);
+                    EPscanCont.eyeCenterY{iColor}=round(size(EPscanCont.EPdata(iColor).stims(1).image,1)/2);
+                else
+                    nonNaNx=~isnan(EPscanCont.EPdata(iColor).data(EPscanCont.XEYchan{iColor},:));
+                    nonNaNy=~isnan(EPscanCont.EPdata(iColor).data(EPscanCont.YEYchan{iColor},:));
+                    EPscanCont.eyeCenterX{iColor}=median(EPscanCont.EPdata(iColor).data(EPscanCont.XEYchan{iColor},nonNaNx));
+                    EPscanCont.eyeCenterY{iColor}=median(EPscanCont.EPdata(iColor).data(EPscanCont.YEYchan{iColor},nonNaNy));
+                    EPscanCont.eyeScaleX{iColor}=max(EPscanCont.EPdata(iColor).data(EPscanCont.XEYchan{iColor},nonNaNx)-EPscanCont.eyeCenterX{iColor})-min(EPscanCont.EPdata(iColor).data(EPscanCont.XEYchan{iColor},nonNaNx)-EPscanCont.eyeCenterX{iColor});
+                    EPscanCont.eyeScaleY{iColor}=max(EPscanCont.EPdata(iColor).data(EPscanCont.YEYchan{iColor},nonNaNx)-EPscanCont.eyeCenterY{iColor})-min(EPscanCont.EPdata(iColor).data(EPscanCont.YEYchan{iColor},nonNaNx)-EPscanCont.eyeCenterY{iColor});
+                end
+            end
+        else
+            EPscanCont.EYEsize{iColor}=[];
+        end
+
+        EPscanCont.HSACchan=find(strcmp('Hsaccade',EPscanCont.chanNames));
+        if length(EPscanCont.HSACchan) > 1
+            EPscanCont.HSACchan=EPscanCont.HSACchan(1);
+        end
+        EPscanCont.VSACchan=find(strcmp('Vsaccade',EPscanCont.chanNames));
+        if length(EPscanCont.VSACchan) > 1
+            EPscanCont.VSACchan=EPscanCont.VSACchan(1);
+        end
+        if ~isempty(EPscanCont.HSACchan) && ~isempty(EPscanCont.VSACchan)
+            HSACchan=find(EPscanCont.chanIndex{iColor}==EPscanCont.HSACchan);
+            VSACchan=find(EPscanCont.chanIndex{iColor}==EPscanCont.VSACchan);
+            EPscanCont.SACCsize{iColor}=max([max(abs(EPscanCont.EPdata(iColor).data(HSACchan,:))) max(abs(EPscanCont.EPdata(iColor).data(VSACchan,:)))]);
+            if EPscanCont.SACCsize{iColor} ==0
+                EPscanCont.SACCsize{iColor}=[];
+            else
+                if isfield(EPscanCont.EPdata(iColor).calibration,'SAC') && isfield(EPscanCont.EPdata(iColor).calibration.SAC,'Xzero') && isfield(EPscanCont.EPdata(iColor).calibration.SAC,'Yzero') && isfield(EPscanCont.EPdata(iColor).calibration.SAC,'Xscale') && isfield(EPscanCont.EPdata(iColor).calibration.SAC,'Yscale')
+                    EPscanCont.sacCenterX{iColor}=EPscanCont.EPdata(iColor).calibration.SAC.Xzero;
+                    EPscanCont.sacCenterY{iColor}=EPscanCont.EPdata(iColor).calibration.SAC.Yzero;
+                    EPscanCont.sacScaleX{iColor}=EPscanCont.EPdata(iColor).calibration.SAC.Xscale;
+                    EPscanCont.sacScaleY{iColor}=EPscanCont.EPdata(iColor).calibration.SAC.Yscale;
+                else
+                    nonNaNx=~isnan(EPscanCont.EPdata(iColor).data(HSACchan,:));
+                    nonNaNy=~isnan(EPscanCont.EPdata(iColor).data(VSACchan,:));
+                    EPscanCont.sacCenterX{iColor}=median(EPscanCont.EPdata(iColor).data(HSACchan,nonNaNx));
+                    EPscanCont.sacCenterY{iColor}=median(EPscanCont.EPdata(iColor).data(VSACchan,nonNaNy));
+                    EPscanCont.sacScaleX{iColor}=max(EPscanCont.EPdata(iColor).data(HSACchan,nonNaNx)-EPscanCont.sacCenterX)-min(EPscanCont.EPdata(iColor).data(HSACchan,nonNaNx)-EPscanCont.sacCenterX);
+                    EPscanCont.sacScaleY{iColor}=max(EPscanCont.EPdata(iColor).data(VSACchan,nonNaNx)-EPscanCont.sacCenterY)-min(EPscanCont.EPdata(iColor).data(VSACchan,nonNaNx)-EPscanCont.sacCenterY);
+                end
+            end
+        else
+            EPscanCont.SACCsize{iColor}=[];
+        end
+
+    end
+end
+
+for iChan=1:EPscanCont.numChans
+    ep_tictoc;if EPtictoc.stop;return;end
+    if any(strcmp(EPscanCont.chanTypes(iChan),{'EEG','REG'}))
+        if strcmp(EPscanCont.dataType,'VLT')
+            EPscanCont.scaling(iChan)=1;
+        elseif any(strcmp(EPscanCont.chanNames(iChan),{'Hsaccade','Vsaccade','blink','SacPot'}))
+            EPscanCont.scaling(iChan)=1;
+        else
+            EPscanCont.scaling(iChan)=100;
+        end
+    else
+        theMax=0;
+        for iColor=1:EPmain.numColors
+            if EPmain.view.dataset(iColor) <= length(EPdataset.dataset)
+                theChan=find(EPscanCont.chanIndex{iColor}==iChan);
+                if ~isempty(theChan)
+                    theMax=max(theMax,max(abs(EPscanCont.EPdata(iColor).data(theChan,:))));
+                end
+            end
+        end
+        EPscanCont.scaling(iChan)=EPscanCont.spacing/theMax;
+    end
+end
+
+EPscanCont.hasLoc=cell(EPscanCont.numColors,1);
+for iColor=1:EPscanCont.numColors
+    if EPmain.view.dataset(iColor) <= length(EPdataset.dataset)
+        EPscanCont.EEGchans=find(strcmp('EEG',EPscanCont.chanTypes));
+        EPscanCont.hasLoc{iColor}=[];
+        if ~isempty(EPscanCont.EPdata(iColor).eloc)
+            for iChan=1:length(EPscanCont.EEGchans)
+                if ~isempty(EPscanCont.EPdata(iColor).eloc(EPscanCont.EEGchans(iChan)).theta)
+                    EPscanCont.hasLoc{iColor}(end+1)=EPscanCont.EEGchans(iChan);
+                end
+            end
+        end
+    end
+end
+
+EPscanCont.graphCoords=[200 220 EPmain.scrsz(3)-700 EPmain.scrsz(4)-320];
+EPscanCont.topoSize=90;
+EPscanCont.topoNum=4;
+
+EPscanCont.playMode=false;
+EPscanCont.showLabels=1; %whether the labels will be displayed
+EPscanCont.editMode=false;
+EPscanCont.gridSize=67;
+
+for iColor=1:EPscanCont.numColors
+    if EPmain.view.dataset(iColor) <= length(EPdataset.dataset)
+        if ~isempty(EPscanCont.EPdata(iColor).eloc) && ~all(isempty([EPscanCont.EPdata(iColor).eloc.theta])) && ~all(isempty([EPscanCont.EPdata(iColor).eloc.radius]))
+            maxRad=0.5;
+            [y,x] = pol2cart(([EPscanCont.EPdata(iColor).eloc(EPscanCont.hasLoc{iColor}).theta]/360)*2*pi,[EPscanCont.EPdata(iColor).eloc(EPscanCont.hasLoc{iColor}).radius]);  % transform electrode locations from polar to cartesian coordinates
+            y=-y; %flip y-coordinate so that nose is upwards.
+            plotrad = min(1.0,max([EPscanCont.EPdata(iColor).eloc(EPscanCont.hasLoc{iColor}).radius])*1.02);            % default: just outside the outermost electrode location
+            plotrad = max(plotrad,0.5);                 % default: plot out to the 0.5 head boundary
+            x = x*(maxRad/plotrad);
+            y = y*(maxRad/plotrad);
+
+            xmin = min(-maxRad,min(x));
+            xmax = max(maxRad,max(x));
+            ymin = min(-maxRad,min(y));
+            ymax = max(maxRad,max(y));
+
+            EPscanCont.x=round(((x/(xmax-xmin))*EPscanCont.gridSize)+ceil(EPscanCont.gridSize/2));
+            EPscanCont.y=round(((y/(ymax-ymin))*EPscanCont.gridSize)+ceil(EPscanCont.gridSize/2));
+        end
+
+        for iChan=1:EPscanCont.numChans
+            ep_tictoc;if EPtictoc.stop;return;end
+            theChan=find(EPscanCont.chanIndex{iColor}==EPscanCont.displayChans(iChan));
+            if all(EPscanCont.EPdata(iColor).analysis.badChans(1,:,theChan))
+                EPscanCont.globalBadChans{iColor}(theChan)=1;
+                EPscanCont.lineStyles{iChan}=':';
+            else
+                EPscanCont.lineStyles{iChan}='-';
+            end
+            EPscanCont.trialBadChans{iColor}(theChan,:)=EPscanCont.EPdata(iColor).analysis.badChans(1,:,theChan);
+        end
+        EPscanCont.badTrials{iColor}=EPscanCont.EPdata(iColor).analysis.badTrials;
+    end
+end
+
+figure(EPmain.handles.scanContData)
+EPscanCont.handles.graphPlot = axes('Units','pixels','position',EPscanCont.graphCoords,'Tag','graphPlot');
+if EPmain.preferences.view.positive ==2
+    set(EPscanCont.handles.graphPlot,'YDir','reverse')
+end
+
+axis([1 EPscanCont.displayLength -length(EPscanCont.displayChans)*EPscanCont.spacing EPscanCont.spacing])
+set(EPscanCont.handles.graphPlot,'XTickLabel','','YTickLabel','','XTick',[],'YTick',[]);
+EPscanCont.handles.plotLine=line([EPscanCont.plotPoint EPscanCont.plotPoint],[-length(EPscanCont.displayChans)*EPscanCont.spacing EPscanCont.spacing],'Color','green','LineWidth',1);
+
+EPscanCont.handles.freqPlot = axes('Units','pixels','position',[EPscanCont.graphCoords(1)+EPscanCont.graphCoords(3)+50 EPscanCont.graphCoords(2) 170 EPscanCont.graphCoords(4)],'Tag','freqPlot');
+axis([1 length(EPscanCont.freqBins) -length(EPscanCont.displayChans)*EPscanCont.spacing EPscanCont.spacing])
+set(EPscanCont.handles.freqPlot,'XTickLabel','','YTickLabel','','XTick',[],'YTick',[]);
+
+EPscanCont.topos.listNames=cell(0); %popupmenu list
+EPscanCont.topos.listNames{1}='none';
+EPscanCont.topos.listCodes=0; %key for what the popupmenu items mean
+[EPscanCont.topos.legendNames, EPscanCont.topos.legendNumbers]=ep_waveNames; %labels for the waveform colors
+
+for iLegend=1:length(EPscanCont.topos.legendNames)
+    EPscanCont.topos.listNames{end+1}=EPscanCont.topos.legendNames{iLegend};
+    EPscanCont.topos.listCodes(end+1)=EPscanCont.topos.legendNumbers(iLegend);
+end
+
+if ~all(cell2mat(cellfun(@isempty,EPscanCont.EYEsize,'UniformOutput',false))) && ~all(cell2mat(cellfun(@isnan,EPscanCont.EYEsize,'UniformOutput',false)))
+    for iLegend=1:length(EPscanCont.topos.legendNames)
+        if ~isempty(EPscanCont.EYEsize{EPscanCont.topos.legendNumbers(iLegend)}) && ~isnan(EPscanCont.EYEsize{EPscanCont.topos.legendNumbers(iLegend)})
+            EPscanCont.topos.listNames{end+1}=['ET-' EPscanCont.topos.legendNames{iLegend}];
+            EPscanCont.topos.listCodes(end+1)=100+EPscanCont.topos.legendNumbers(iLegend);
+        end
+    end
+    uicontrol('Style','text','HorizontalAlignment','left','String', 'Eye Track','FontSize',EPmain.fontsize,...
+        'Position',[EPscanCont.graphCoords(1)+560 EPscanCont.topoSize*2+10-20 60 20]);
+    uicontrol('Style','text','HorizontalAlignment','left','String', 'Center X','FontSize',EPmain.fontsize,...
+        'Position',[EPscanCont.graphCoords(1)+560 EPscanCont.topoSize*2+10-40 60 20]);
+    EPscanCont.handles.topos.eyeCenterX = uicontrol('Style','edit','HorizontalAlignment','left','String', sprintf('%4.2f', EPscanCont.eyeCenterX{EPscanCont.currentColor}),'FontSize',EPmain.fontsize,...
+        'Position',[EPscanCont.graphCoords(1)+560 EPscanCont.topoSize*2+10-60 60 20],'Callback',@changeEyeSettings);
+    uicontrol('Style','text','HorizontalAlignment','left','String', 'Center Y','FontSize',EPmain.fontsize,...
+        'Position',[EPscanCont.graphCoords(1)+560 EPscanCont.topoSize*2+10-80 60 20]);
+    EPscanCont.handles.topos.eyeCenterY = uicontrol('Style','edit','HorizontalAlignment','left','String', sprintf('%4.2f', EPscanCont.eyeCenterY{EPscanCont.currentColor}),'FontSize',EPmain.fontsize,...
+        'Position',[EPscanCont.graphCoords(1)+560 EPscanCont.topoSize*2+10-100 60 20],'Callback',@changeEyeSettings);
+    uicontrol('Style','text','HorizontalAlignment','left','String', 'Scale X','FontSize',EPmain.fontsize,...
+        'Position',[EPscanCont.graphCoords(1)+560 EPscanCont.topoSize*2+10-120 60 20]);
+    EPscanCont.handles.topos.eyeScaleX = uicontrol('Style','edit','HorizontalAlignment','left','String', sprintf('%4.2f', EPscanCont.eyeScaleX{EPscanCont.currentColor}),'FontSize',EPmain.fontsize,...
+        'Position',[EPscanCont.graphCoords(1)+560 EPscanCont.topoSize*2+10-140 60 20],'Callback',@changeEyeSettings);
+    uicontrol('Style','text','HorizontalAlignment','left','String', 'Scale Y','FontSize',EPmain.fontsize,...
+        'Position',[EPscanCont.graphCoords(1)+560 EPscanCont.topoSize*2+10-160 60 20]);
+    EPscanCont.handles.topos.eyeScaleY = uicontrol('Style','edit','HorizontalAlignment','left','String', sprintf('%4.2f', EPscanCont.eyeScaleY{EPscanCont.currentColor}),'FontSize',EPmain.fontsize,...
+        'Position',[EPscanCont.graphCoords(1)+560 EPscanCont.topoSize*2+10-180 60 20],'Callback',@changeEyeSettings);
+end
+
+if ~all(cell2mat(cellfun(@isempty,EPscanCont.SACCsize,'UniformOutput',false))) && ~all(cell2mat(cellfun(@isnan,EPscanCont.SACCsize,'UniformOutput',false)))
+    for iLegend=1:length(EPscanCont.topos.legendNames)
+        if ~isempty(EPscanCont.EYEsize{EPscanCont.topos.legendNumbers(iLegend)}) && ~isnan(EPscanCont.EYEsize{EPscanCont.topos.legendNumbers(iLegend)})
+            EPscanCont.topos.listNames{end+1}=['EOG-' EPscanCont.topos.legendNames{iLegend}];
+            EPscanCont.topos.listCodes(end+1)=200+EPscanCont.topos.legendNumbers(iLegend);
+        end
+    end
+    uicontrol('Style','text','HorizontalAlignment','left','String', 'EOG Track','FontSize',EPmain.fontsize,...
+        'Position',[EPscanCont.graphCoords(1)+620 EPscanCont.topoSize*2+10-20 70 20]);
+    uicontrol('Style','text','HorizontalAlignment','left','String', 'Center X','FontSize',EPmain.fontsize,...
+        'Position',[EPscanCont.graphCoords(1)+620 EPscanCont.topoSize*2+10-40 70 20]);
+    EPscanCont.handles.topos.sacCenterX = uicontrol('Style','edit','HorizontalAlignment','left','String', sprintf('%4.2f', EPscanCont.sacCenterX{EPscanCont.currentColor}),'FontSize',EPmain.fontsize,...
+        'Position',[EPscanCont.graphCoords(1)+620 EPscanCont.topoSize*2+10-60 70 20],'Callback',@changeEyeSettings);
+    uicontrol('Style','text','HorizontalAlignment','left','String', 'Center Y','FontSize',EPmain.fontsize,...
+        'Position',[EPscanCont.graphCoords(1)+620 EPscanCont.topoSize*2+10-80 70 20]);
+    EPscanCont.handles.topos.sacCenterY = uicontrol('Style','edit','HorizontalAlignment','left','String', sprintf('%4.2f', EPscanCont.sacCenterY{EPscanCont.currentColor}),'FontSize',EPmain.fontsize,...
+        'Position',[EPscanCont.graphCoords(1)+620 EPscanCont.topoSize*2+10-100 70 20],'Callback',@changeEyeSettings);
+    uicontrol('Style','text','HorizontalAlignment','left','String', 'Scale X','FontSize',EPmain.fontsize,...
+        'Position',[EPscanCont.graphCoords(1)+620 EPscanCont.topoSize*2+10-120 70 20]);
+    EPscanCont.handles.topos.sacScaleX = uicontrol('Style','edit','HorizontalAlignment','left','String', sprintf('%4.2f', EPscanCont.sacScaleX{EPscanCont.currentColor}),'FontSize',EPmain.fontsize,...
+        'Position',[EPscanCont.graphCoords(1)+620 EPscanCont.topoSize*2+10-140 70 20],'Callback',@changeEyeSettings);
+    uicontrol('Style','text','HorizontalAlignment','left','String', 'Scale Y','FontSize',EPmain.fontsize,...
+        'Position',[EPscanCont.graphCoords(1)+620 EPscanCont.topoSize*2+10-160 70 20]);
+    EPscanCont.handles.topos.sacScaleY = uicontrol('Style','edit','HorizontalAlignment','left','String', sprintf('%4.2f', EPscanCont.sacScaleY{EPscanCont.currentColor}),'FontSize',EPmain.fontsize,...
+        'Position',[EPscanCont.graphCoords(1)+620 EPscanCont.topoSize*2+10-180 70 20],'Callback',@changeEyeSettings);
+end
+
+nameCounter=1;
+for iColor=1:EPscanCont.numColors
+    if EPmain.view.dataset(iColor) <= length(EPdataset.dataset)
+        if ~isempty(EPscanCont.EPdata(iColor).video)
+            EPscanCont.topos.listNames{end+1}=['vid-' EPscanCont.topos.legendNames{nameCounter}];
+            EPscanCont.topos.listCodes(end+1)=300+iColor;
+        end
+    end
+end
+
+EPscanCont.topos.topoValue=ones(EPscanCont.topoNum,1); %selection for each of the topos
+EPscanCont.topos.topoValue(1:min(EPscanCont.topoNum,length(EPscanCont.topos.listNames)-1))=[2:min(EPscanCont.topoNum+1,length(EPscanCont.topos.listNames))];
+EPscanCont.topos.topoLoc=zeros(EPscanCont.topoNum,4); %coordinates of the topos
+EPscanCont.topos.topoLoc(1,:)=[EPscanCont.graphCoords(1)+690 40+EPscanCont.topoSize EPscanCont.topoSize EPscanCont.topoSize];
+EPscanCont.topos.topoLoc(2,:)=[EPscanCont.graphCoords(1)+690+EPscanCont.topoSize 40+EPscanCont.topoSize EPscanCont.topoSize EPscanCont.topoSize];
+EPscanCont.topos.topoLoc(3,:)=[EPscanCont.graphCoords(1)+690 20 EPscanCont.topoSize EPscanCont.topoSize];
+EPscanCont.topos.topoLoc(4,:)=[EPscanCont.graphCoords(1)+690+EPscanCont.topoSize 20 EPscanCont.topoSize EPscanCont.topoSize];
+
+for iTopo=1:EPscanCont.topoNum
+    EPscanCont.handles.topos.topo(iTopo) = axes('Units','pixel','position',EPscanCont.topos.topoLoc(iTopo,:));
+    set(EPscanCont.handles.topos.topo(iTopo),'XTickLabel','','YTickLabel','','XTick',[],'YTick',[]);
+    EPscanCont.handles.topos.menu(iTopo) = uicontrol('Style', 'popupmenu', 'String',EPscanCont.topos.listNames, 'FontSize', EPmain.fontsize,...
+        'Callback', {@changePlots,iTopo},'Value', EPscanCont.topos.topoValue(iTopo),'Position', [EPscanCont.topos.topoLoc(iTopo,1) EPscanCont.topos.topoLoc(iTopo,2)-20 EPscanCont.topoSize 20]);
+end
+
+EPscanCont.handles.chanNames=[];
+
+EPscanCont.handles.xSlider = uicontrol('Style', 'slider', 'Value',EPscanCont.xGraphPos,...
+    'Position', [EPscanCont.graphCoords(1) EPscanCont.graphCoords(2)-20 EPscanCont.graphCoords(3) 20],'SliderStep',[EPscanCont.displayLength/EPscanCont.numPoints max(0.2,length(EPscanCont.displayLength)/EPscanCont.numPoints)], 'Min',0,'Max',1,'Callback', @xSlider);
+
+if EPscanCont.numPoints <= EPscanCont.displayLength
+    set(EPscanCont.handles.xSlider,'enable','off');
+end
+
+EPscanCont.handles.ySlider = uicontrol('Style', 'slider', 'Value',EPscanCont.yGraphPos,...
+    'Position', [EPscanCont.graphCoords(1)-20 EPscanCont.graphCoords(2) 20 EPscanCont.graphCoords(4)],'SliderStep',[length(EPscanCont.displayChans)/EPscanCont.numChans max(0.2,length(EPscanCont.displayChans)/EPscanCont.numChans)], 'Min',0,'Max',1,'Callback', @ySlider);
+
+if EPscanCont.numChans == length(EPscanCont.displayChans)
+    set(EPscanCont.handles.ySlider,'enable','off');
+end
+
+EPscanCont.handles.epochMarks = axes('Units','pixel','Position', [EPscanCont.graphCoords(1) EPscanCont.graphCoords(2)-30 EPscanCont.graphCoords(3) 20]);
+axis([1 EPscanCont.displayLength 0 1])
+set(EPscanCont.handles.epochMarks,'XTickLabel','','YTickLabel','','XTick',[],'YTick',[]);
+
+EPscanCont.handles.events=[];
+
+EPscanCont.handles.editMode = uicontrol('Style', 'togglebutton', 'Value', EPscanCont.editMode,'String','edt','FontSize',EPmain.fontsize,...
+    'Position', [100 scrsz(4)-100 30 30], 'Callback', @editMode);
+
+EPscanCont.handles.showLabels = uicontrol('Style', 'togglebutton', 'Value', EPscanCont.showLabels,'String','evt','FontSize',EPmain.fontsize,...
+    'Position', [130 scrsz(4)-100 30 30], 'Callback', @showEventLabels);
+
+EPscanCont.handles.displayStart=uicontrol('Style','text','HorizontalAlignment','left','String', ep_ms2time((EPscanCont.displayPoints(1)-1)*(1000/EPscanCont.EPdata(EPscanCont.currentColor).Fs)),'FontSize',EPmain.fontsize,...
+    'Position',[EPscanCont.graphCoords(1)-80 EPscanCont.graphCoords(2)-30 80 20]);
+
+EPscanCont.handles.displayEnd=uicontrol('Style','text','HorizontalAlignment','left','String', ep_ms2time(EPscanCont.displayPoints(end)*(1000/EPscanCont.EPdata(EPscanCont.currentColor).Fs)),'FontSize',EPmain.fontsize,...
+    'Position',[EPscanCont.graphCoords(3)+EPscanCont.graphCoords(1)+10 EPscanCont.graphCoords(2)-30 80 20]);
+
+EPscanCont.handles.currentColor = uicontrol('Style', 'popupmenu', 'Value', find(EPscanCont.currentColor==EPscanCont.topos.legendNumbers),'String',EPscanCont.topos.legendNames,'FontSize',EPmain.fontsize,...
+    'Position', [EPscanCont.graphCoords(1) 160 350 20], 'Callback', @changeCurrent);
+
+if ~isempty(EPscanCont.currentEvent)
+    EPscanCont.handles.currentEvent = uicontrol('Style', 'popupmenu', 'String', EPscanCont.starredSampleEventList, 'FontSize', EPmain.fontsize,...
+        'Callback', @changeCurrentEvent,...
+        'Value', EPscanCont.currentEvent,'Position', [EPscanCont.graphCoords(1) 140 350 20]);
+else
+    EPscanCont.handles.currentEvent = uicontrol('Style', 'popupmenu', 'String','none', 'FontSize', EPmain.fontsize,...
+        'Callback', @changeCurrentEvent,...
+        'Value', 1,'Position', [EPscanCont.graphCoords(1) 140 350 20]);
+end
+
+EPscanCont.handles.recenter = uicontrol('Style', 'pushbutton', 'String', 'Recenter','FontSize',EPmain.fontsize,...
+    'Position', [EPscanCont.graphCoords(1) 120 100 20], 'Callback', @recenter);
+
+EPscanCont.handles.backEvent = uicontrol('Style', 'pushbutton', 'String', '<-','FontSize',EPmain.fontsize,...
+    'Position', [EPscanCont.graphCoords(1)+110 120 20 20], 'Callback', @shiftEvent);
+
+EPscanCont.handles.nextEvent = uicontrol('Style', 'pushbutton', 'String', '->','FontSize',EPmain.fontsize,...
+    'Position', [EPscanCont.graphCoords(1)+130 120 20 20], 'Callback', @shiftEvent);
+
+EPscanCont.handles.e1 = uicontrol('Style', 'pushbutton', 'String', 'e1','FontSize',EPmain.fontsize,...
+    'Position', [EPscanCont.graphCoords(1)+160 120 20 20], 'Callback', @e1e2);
+
+EPscanCont.handles.e2 = uicontrol('Style', 'pushbutton', 'String', 'e2','FontSize',EPmain.fontsize,...
+    'Position', [EPscanCont.graphCoords(1)+180 120 20 20], 'Callback', @e1e2);
+
+EPscanCont.handles.firstEvent = uicontrol('Style', 'popupmenu', 'String', EPscanCont.starredEventList{EPscanCont.currentColor}, 'FontSize', EPmain.fontsize,...
+    'Callback', @changeEvent,...
+    'Value', EPscanCont.firstEvent,'Position', [EPscanCont.graphCoords(1) 100 350 20]);
+
+EPscanCont.handles.lastEvent = uicontrol('Style', 'popupmenu', 'String', EPscanCont.starredEventList{EPscanCont.currentColor}, 'FontSize', EPmain.fontsize,...
+    'Callback', @changeEvent,...
+    'Value', EPscanCont.lastEvent,'Position', [EPscanCont.graphCoords(1) 80 350 20]);
+
+EPscanCont.handles.redisplay = uicontrol('Style', 'pushbutton', 'String', 'Redisplay','FontSize',EPmain.fontsize,...
+    'Position', [EPscanCont.graphCoords(1) 60 100 20], 'Callback', @redisplay);
+
+EPscanCont.handles.topos.sample = uicontrol('Style','edit','HorizontalAlignment','left','String', EPscanCont.displayPoints(EPscanCont.plotPoint),'FontSize',EPmain.fontsize,...
+    'Position',[EPscanCont.graphCoords(1)+140 60 80 20],'Callback',@editPoint);
+
+EPscanCont.handles.topos.time = uicontrol('Style','text','HorizontalAlignment','left','String', ep_ms2time((EPscanCont.displayPoints(EPscanCont.plotPoint))*(1000/EPscanCont.EPdata(EPscanCont.currentColor).Fs)),'FontSize',EPmain.fontsize,...
+    'Position',[EPscanCont.graphCoords(1)+220 60 80 20]);
+
+EPscanCont.handles.addEvent = uicontrol('Style', 'pushbutton', 'String', '+ evt','FontSize',EPmain.fontsize,...
+    'Position', [EPscanCont.graphCoords(1)+410 170 50 20], 'Callback', @editEvent);
+
+EPscanCont.handles.minusEvent = uicontrol('Style', 'pushbutton', 'String', '- evt','FontSize',EPmain.fontsize,...
+    'Position', [EPscanCont.graphCoords(1)+460 170 50 20], 'Callback', @editEvent);
+
+uicontrol('Style','text','HorizontalAlignment','left','String', 'Type','FontSize',EPmain.fontsize,...
+    'Position',[EPscanCont.graphCoords(1)+360 150 50 20]);
+
+EPscanCont.handles.eventType = uicontrol('Style', 'edit', 'String', '','FontSize',EPmain.fontsize,...
+    'Position', [EPscanCont.graphCoords(1)+410 150 150 20], 'Callback', @editEvent);
+
+uicontrol('Style','text','HorizontalAlignment','left','String', 'Value','FontSize',EPmain.fontsize,...
+    'Position',[EPscanCont.graphCoords(1)+360 130 50 20]);
+
+EPscanCont.handles.eventValue = uicontrol('Style', 'edit', 'String', '','FontSize',EPmain.fontsize,...
+    'Position', [EPscanCont.graphCoords(1)+410 130 150 20], 'Callback', @editEvent);
+
+uicontrol('Style','text','HorizontalAlignment','left','String', 'Sample','FontSize',EPmain.fontsize,...
+    'Position',[EPscanCont.graphCoords(1)+360 110 50 20]);
+
+EPscanCont.handles.eventSample = uicontrol('Style', 'edit', 'String', '','FontSize',EPmain.fontsize,...
+    'Position', [EPscanCont.graphCoords(1)+410 110 150 20], 'Callback', @editEvent);
+
+uicontrol('Style','text','HorizontalAlignment','left','String', 'Duration','FontSize',EPmain.fontsize,...
+    'Position',[EPscanCont.graphCoords(1)+360 90 50 20]);
+
+EPscanCont.handles.eventDuration = uicontrol('Style', 'edit', 'String', '','FontSize',EPmain.fontsize,...
+    'Position', [EPscanCont.graphCoords(1)+410 90 150 20], 'Callback', @editEvent);
+
+EPscanCont.handles.eventKeys = uicontrol('Style', 'popupmenu', 'String', {''},'Value', EPscanCont.currentkey, 'FontSize',EPmain.fontsize,...
+    'Position', [EPscanCont.graphCoords(1)+405 70 60 20], 'Callback', @editEvent);
+
+EPscanCont.handles.addKey = uicontrol('Style', 'pushbutton', 'String', '+ key','FontSize',EPmain.fontsize,...
+    'Position', [EPscanCont.graphCoords(1)+460 70 50 20], 'Callback', @editEvent);
+
+EPscanCont.handles.minusKey = uicontrol('Style', 'pushbutton', 'String', '- key','FontSize',EPmain.fontsize,...
+    'Position', [EPscanCont.graphCoords(1)+510 70 50 20], 'Callback', @editEvent);
+
+uicontrol('Style','text','HorizontalAlignment','left','String', 'Code','FontSize',EPmain.fontsize,...
+    'Position',[EPscanCont.graphCoords(1)+360 50 50 20]);
+
+EPscanCont.handles.keyCode = uicontrol('Style', 'edit', 'String', '','FontSize',EPmain.fontsize,...
+    'Position', [EPscanCont.graphCoords(1)+410 50 150 20], 'Callback', @editEvent);
+
+uicontrol('Style','text','HorizontalAlignment','left','String', 'Data','FontSize',EPmain.fontsize,...
+    'Position',[EPscanCont.graphCoords(1)+360 30 50 20]);
+
+EPscanCont.handles.keyData = uicontrol('Style', 'edit', 'String', '','FontSize',EPmain.fontsize,...
+    'Position', [EPscanCont.graphCoords(1)+410 30 150 20], 'Callback', @editEvent);
+
+uicontrol('Style','text','HorizontalAlignment','left','String', 'Type','FontSize',EPmain.fontsize,...
+    'Position',[EPscanCont.graphCoords(1)+360 10 50 20]);
+
+EPscanCont.handles.keyType = uicontrol('Style', 'edit', 'String', '','FontSize',EPmain.fontsize,...
+    'Position', [EPscanCont.graphCoords(1)+410 10 75 20], 'Callback', @editEvent);
+
+EPscanCont.handles.keyDescrip = uicontrol('Style', 'edit', 'String', '','FontSize',EPmain.fontsize,...
+    'Position', [EPscanCont.graphCoords(1)+485 10 75 20], 'Callback', @editEvent);
+
+if isempty(EPscanCont.eventList{EPscanCont.currentColor})
+    set(EPscanCont.handles.firstEvent,'enable','off');
+    set(EPscanCont.handles.lastEvent,'enable','off');
+    set(EPscanCont.handles.redisplay,'enable','off');
+    set(EPscanCont.handles.currentEvent,'enable','off');
+end
+
+if ~all(cell2mat(cellfun(@isempty,EPscanCont.EYEsize,'UniformOutput',false))) && ~all(cell2mat(cellfun(@isnan,EPscanCont.EYEsize,'UniformOutput',false))) &&...
+        ~all(cell2mat(cellfun(@isempty,EPscanCont.SACCsize,'UniformOutput',false))) && ~all(cell2mat(cellfun(@isnan,EPscanCont.SACCsize,'UniformOutput',false)))
+    uicontrol('Style','text','HorizontalAlignment','left','String', 'ERP Tracker','FontSize',EPmain.fontsize,...
+        'Position',[50 160 100 20]);
+    uicontrol('Style','text','HorizontalAlignment','left','String', 'Freq','FontSize',EPmain.fontsize,...
+        'Position',[50 140 50 20]);
+    EPscanCont.handles.ETfreqList = uicontrol('Style', 'popupmenu', 'String', EPscanCont.freqList, 'FontSize', EPmain.fontsize,...
+        'Callback', @changeFreq,...
+        'Value', EPscanCont.freqShow,'Position', [50 120 150 20]);
+
+    if strcmp(EPscanCont.dataType,'VLT')
+        set(EPscanCont.handles.ETfreqList,'enable','off');
+    end
+
+    uicontrol('Style','text','HorizontalAlignment','left','String', 'Channel','FontSize',EPmain.fontsize,...
+        'Position',[50 100 100 20]);
+    EPscanCont.handles.ETchanList = uicontrol('Style', 'popupmenu', 'String', EPscanCont.chanList, 'FontSize', EPmain.fontsize,...
+        'Callback', @changeChan,...
+        'Value', EPscanCont.chanShow,'Position', [50 80 150 20]);
+    uicontrol('Style','text','HorizontalAlignment','left','String', 'Latency','FontSize',EPmain.fontsize,...
+        'Position',[50 60 50 20]);
+    EPscanCont.handles.ETlatency = uicontrol('Style', 'edit', 'String', '','FontSize',EPmain.fontsize,...
+        'TooltipString','Latency adjustment between ERP tracker data and fixation time.  Positive means later than the fixation onset time.',...
+        'Position', [50 40 50 20], 'Callback', @editETlatency);
+end
+
+EPscanCont.handles.cancel = uicontrol('Style', 'pushbutton', 'String', 'Cancel','FontSize',EPmain.fontsize,...
+    'Position', [92 5 50 35], 'Callback', @cancelScan);
+
+EPscanCont.handles.done = uicontrol('Style', 'pushbutton', 'String', 'Save','FontSize',EPmain.fontsize,...
+    'Position', [152 5 50 35], 'Callback', @done);
+
+uicontrol('Style','text','HorizontalAlignment','left','String', 'Channels','FontSize',EPmain.fontsize,...
+    'Position',[212 40 60 20]);
+
+EPscanCont.handles.lessChans = uicontrol('Style', 'pushbutton', 'String', '+','FontSize',EPmain.fontsize*2,...
+    'Position', [212 10 30 30], 'Callback', @lessChans);
+
+EPscanCont.handles.moreChans = uicontrol('Style', 'pushbutton', 'String', '-','FontSize',EPmain.fontsize*2,...
+    'Position', [242 10 30 30], 'Callback', @moreChans);
+
+set(EPscanCont.handles.moreChans,'enable','off');
+
+uicontrol('Style','text','HorizontalAlignment','left','String', 'Time','FontSize',EPmain.fontsize,...
+    'Position',[292 40 60 20]);
+
+EPscanCont.handles.lessTime = uicontrol('Style', 'pushbutton', 'String', '+','FontSize',EPmain.fontsize*2,...
+    'Position', [292 10 30 30], 'Callback', @lessTime);
+
+EPscanCont.handles.moreTime = uicontrol('Style', 'pushbutton', 'String', '-','FontSize',EPmain.fontsize*2,...
+    'Position', [322 10 30 30], 'Callback', @moreTime);
+
+EPscanCont.handles.play = uicontrol('Style', 'pushbutton', 'String', 'Play','FontSize',EPmain.fontsize*2,...
+    'Position', [372 10 50 30], 'Callback', @startPlay);
+
+EPscanCont.handles.stop = uicontrol('Style', 'pushbutton', 'String', 'Stop','FontSize',EPmain.fontsize*2,...
+    'Position', [422 10 50 30], 'Callback', ['global EPscanCont;','EPscanCont.playMode=false;' ]);
+
+EPscanCont.handles.movie = uicontrol('Style', 'pushbutton', 'String', 'Mov','FontSize',EPmain.fontsize*2,...
+    'Position', [472 10 50 30], 'Callback', @startMovie);
+
+set(EPmain.handles.scanContData,'WindowButtonDownFcn',@clickGraph);
+
+updateDisplay(1,1);
+
+ep_tictoc('end');
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function cancelScan(~,~)
+%quit from scan pane without saving edits
+
+global EPmain EPscanCont
+
+delete(EPmain.handles.scanContData);
+
+EPscanCont=[];
+
+ep('start')
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function done(~,~)
+%quit from scan pane and save edits
+
+global EPmain EPscanCont EPdataset
+
+theColor=EPscanCont.currentColor;
+EPscanCont.done=1;
+close(EPmain.handles.scanContData);
+
+if ~exist([EPdataset.EPwork filesep 'EPwork'],'dir')
+    msg{1}='The work directory cannot be found.';
+    [msg]=ep_errorMsg(msg);
+    return
+end
+
+if any(EPscanCont.edited)
+    for iColor=1:length(EPscanCont.edited)
+        if EPscanCont.edited(iColor)
+            for iChan=1:EPscanCont.numChans
+                theChan=find(EPscanCont.chanIndex{1}==EPscanCont.displayChans(iChan));
+                EPscanCont.EPdata(iColor).analysis.badChans(1,:,theChan)=EPscanCont.trialBadChans{theColor}(iChan,:);
+                if EPscanCont.globalBadChans{theColor}(iChan)
+                    EPscanCont.EPdata(iColor).analysis.badChans(1,:,theChan)=1;
+                end
+            end
+            EPscanCont.EPdata(iColor).analysis.badTrials=EPscanCont.badTrials{iColor};
+
+            if ~isempty(EPscanCont.XEYchan) && ~isempty(EPscanCont.YEYchan)
+                EPscanCont.EPdata(iColor).calibration.ET.Xzero=EPscanCont.eyeCenterX{iColor};
+                EPscanCont.EPdata(iColor).calibration.ET.Yzero=EPscanCont.eyeCenterY{iColor};
+                EPscanCont.EPdata(iColor).calibration.ET.Xscale=EPscanCont.eyeScaleX{iColor};
+                EPscanCont.EPdata(iColor).calibration.ET.Yscale=EPscanCont.eyeScaleY{iColor};
+            end
+            if ~isempty(EPscanCont.HSACchan) && ~isempty(EPscanCont.VSACchan)
+                EPscanCont.EPdata(iColor).calibration.SAC.Xzero=EPscanCont.sacCenterX{iColor};
+                EPscanCont.EPdata(iColor).calibration.SAC.Yzero=EPscanCont.sacCenterY{iColor};
+                EPscanCont.EPdata(iColor).calibration.SAC.Xscale=EPscanCont.sacScaleX{iColor};
+                EPscanCont.EPdata(iColor).calibration.SAC.Yscale=EPscanCont.sacScaleY{iColor};
+            end
+
+            EPscanCont.EPdata(iColor).pca=EPscanCont.pca{iColor};
+
+            ep_saveEPdataset(EPscanCont.EPdata(iColor),EPmain.view.dataset(iColor),'no');
+        end
+    end
+end
+
+EPscanCont=[];
+
+ep('start')
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function xSlider(~,~)
+%update graph after xSlider moved
+
+global EPscanCont EPmain EPdataset
+
+EPscanCont.xGraphPos=get(EPscanCont.handles.xSlider,'Value');
+
+EPscanCont.displayPoints=1+floor(EPscanCont.xGraphPos*EPscanCont.numPoints):EPscanCont.displayLength+floor(EPscanCont.xGraphPos*EPscanCont.numPoints);
+if max(EPscanCont.displayPoints) > EPscanCont.numPoints
+    EPscanCont.displayPoints=[max(1,EPscanCont.numPoints-EPscanCont.displayLength+1):EPscanCont.numPoints];
+end
+
+updateDisplay(1,0);
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function ySlider(~,~)
+%update graph after ySlider moved
+
+global EPscanCont EPmain EPdataset
+
+EPscanCont.yGraphPos=get(EPscanCont.handles.ySlider,'Value');
+
+EPscanCont.displayChans=1+floor((1-EPscanCont.yGraphPos)*EPscanCont.numChans):length(EPscanCont.displayChans)+floor((1-EPscanCont.yGraphPos)*EPscanCont.numChans);
+if max(EPscanCont.displayChans) > EPscanCont.numChans
+    EPscanCont.displayChans=[max(1,EPscanCont.numChans-length(EPscanCont.displayChans)+1):EPscanCont.numChans];
+end
+
+updateDisplay(0,1);
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function lessChans(~,~)
+%zoom in (less channels)
+
+global EPscanCont EPmain EPdataset
+
+if length(EPscanCont.displayChans) > 1
+    EPscanCont.displayChans=[1:floor(length(EPscanCont.displayChans)/2)];
+end
+
+if EPscanCont.numChans > length(EPscanCont.displayChans)
+    set(EPscanCont.handles.ySlider,'enable','on');
+end
+
+EPscanCont.yGraphPos=1;
+set(EPscanCont.handles.ySlider,'Value',EPscanCont.yGraphPos);
+sliderStep=2*length(EPscanCont.displayChans)/EPscanCont.numChans;
+set(EPscanCont.handles.ySlider,'SliderStep',[sliderStep/4 sliderStep]);
+
+set(EPscanCont.handles.moreChans,'enable','on');
+if length(EPscanCont.displayChans) == 1
+    set(EPscanCont.handles.lessChans,'enable','off');
+else
+    set(EPscanCont.handles.lessChans,'enable','on');
+end
+
+updateDisplay(0,1);
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function moreChans(~,~)
+%zoom out (more channels)
+
+global EPscanCont
+
+EPscanCont.displayChans=[1:length(EPscanCont.displayChans)*2];
+if max(EPscanCont.displayChans) > EPscanCont.numChans
+    EPscanCont.displayChans=[1:EPscanCont.numChans];
+end
+
+EPscanCont.yGraphPos=1;
+set(EPscanCont.handles.ySlider,'Value',EPscanCont.yGraphPos);
+sliderStep=2*length(EPscanCont.displayChans)/EPscanCont.numChans;
+set(EPscanCont.handles.ySlider,'SliderStep',[sliderStep/4 sliderStep]);
+
+if EPscanCont.numChans == length(EPscanCont.displayChans)
+    set(EPscanCont.handles.ySlider,'enable','off');
+end
+
+set(EPscanCont.handles.lessChans,'enable','on');
+if length(EPscanCont.displayChans) == EPscanCont.numChans
+    set(EPscanCont.handles.moreChans,'enable','off');
+else
+    set(EPscanCont.handles.moreChans,'enable','on');
+end
+
+updateDisplay(0,1);
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function lessTime(~,~)
+%zoom in (less time)
+
+global EPscanCont
+
+if length(EPscanCont.displayPoints) > EPscanCont.xGraphMin
+    EPscanCont.displayPoints=[EPscanCont.displayPoints(1):EPscanCont.displayPoints(1)+floor(length(EPscanCont.displayPoints)/2)-1];
+end
+
+if length(EPscanCont.displayPoints) < EPscanCont.xGraphMin
+    EPscanCont.displayPoints=[EPscanCont.displayPoints(1):EPscanCont.displayPoints(1)+EPscanCont.xGraphMin-1];
+end
+
+EPscanCont.plotPoint=ceil(EPscanCont.plotPoint*2);
+if EPscanCont.plotPoint > length(EPscanCont.displayPoints)
+    EPscanCont.plotPoint = length(EPscanCont.displayPoints);
+end
+
+EPscanCont.displayLength=length(EPscanCont.displayPoints);
+set(EPscanCont.handles.xSlider,'SliderStep',[EPscanCont.displayLength/EPscanCont.numPoints max(0.2,length(EPscanCont.displayLength)/EPscanCont.numPoints)]);
+
+if EPscanCont.numPoints > length(EPscanCont.displayPoints)
+    set(EPscanCont.handles.xSlider,'enable','on');
+end
+
+set(EPscanCont.handles.moreTime,'enable','on');
+if length(EPscanCont.displayPoints) == EPscanCont.xGraphMin
+    set(EPscanCont.handles.lessTime,'enable','off');
+else
+    set(EPscanCont.handles.lessTime,'enable','on');
+end
+
+updateDisplay(1,0);
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function moreTime(~,~)
+%zoom out (more time)
+
+global EPscanCont
+
+EPscanCont.displayPoints=[EPscanCont.displayPoints(1):EPscanCont.displayPoints(1)+length(EPscanCont.displayPoints)*2-1];
+
+if max(EPscanCont.displayPoints) > EPscanCont.numPoints
+    EPscanCont.displayPoints=[EPscanCont.displayPoints(1):EPscanCont.numPoints];
+end
+
+EPscanCont.plotPoint=ceil(EPscanCont.plotPoint/2);
+
+EPscanCont.displayLength=length(EPscanCont.displayPoints);
+set(EPscanCont.handles.xSlider,'SliderStep',[EPscanCont.displayLength/EPscanCont.numPoints max(0.2,length(EPscanCont.displayLength)/EPscanCont.numPoints)]);
+
+if EPscanCont.numPoints == length(EPscanCont.displayPoints)
+    set(EPscanCont.handles.xSlider,'enable','off');
+end
+
+set(EPscanCont.handles.lessTime,'enable','on');
+if length(EPscanCont.displayPoints) == EPscanCont.numPoints
+    set(EPscanCont.handles.moreTime,'enable','off');
+else
+    set(EPscanCont.handles.moreTime,'enable','on');
+end
+
+updateDisplay(1,0);
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function editPoint(~,~)
+%edit of time marker coordinate
+
+global EPscanCont
+
+newPoint=str2double(get(EPscanCont.handles.topos.sample,'String'));
+if ishandle(EPscanCont.handles.plotLine)
+    delete(EPscanCont.handles.plotLine);
+end
+if ~isnumeric(newPoint) || isnan(newPoint) || (newPoint<=0)
+    EPscanCont.plotPoint=[];
+else
+    EPscanCont.plotPoint=round(newPoint);
+    if ~ismember(EPscanCont.plotPoint,EPscanCont.displayPoints)
+        EPscanCont.displayPoints=[EPscanCont.plotPoint-ceil(EPscanCont.displayLength/2)+1:EPscanCont.plotPoint+ceil(EPscanCont.displayLength/2)];
+        if EPscanCont.displayPoints(1) < 1
+            EPscanCont.displayPoints=EPscanCont.displayPoints-EPscanCont.displayPoints(1)+1;
+        end
+        if EPscanCont.displayPoints(end) > EPscanCont.numPoints
+            EPscanCont.displayPoints=EPscanCont.displayPoints-(EPscanCont.displayPoints(end)-EPscanCont.numPoints);
+        end
+        EPscanCont.displayLength=length(EPscanCont.displayPoints);
+        EPscanCont.plotPoint=find(EPscanCont.plotPoint==EPscanCont.displayPoints);
+        updateDisplay(1,0);
+    end
+end
+
+drawPlots(EPscanCont.handles.topos.topo,EPscanCont.plotPoint);
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function clickGraph(~,~)
+%respond to click in graph area
+
+global EPscanCont EPmain
+
+theColor=EPscanCont.currentColor;
+pos = get(EPmain.handles.scanContData, 'CurrentPoint');
+if (pos(1) < EPscanCont.graphCoords(1)) || (pos(1) > EPscanCont.graphCoords(1)+EPscanCont.graphCoords(3))
+    return
+end
+if (pos(2) < (EPscanCont.graphCoords(2))-30) || (pos(2) > EPscanCont.graphCoords(2)+EPscanCont.graphCoords(4))
+    return
+end
+
+clickX=ceil(((pos(1)-EPscanCont.graphCoords(1))/EPscanCont.graphCoords(3))*EPscanCont.displayLength); %convert to graph samples
+if clickX < 1
+    clickX=1;
+end
+if clickX > EPscanCont.displayLength
+    clickX=EPscanCont.displayLength;
+end
+
+clickY=((EPmain.scrsz(4)-pos(2)-(EPmain.scrsz(4)-EPscanCont.graphCoords(2)-EPscanCont.graphCoords(4)))/EPscanCont.graphCoords(4))*(-(length(EPscanCont.displayChans)+1)*EPscanCont.spacing)+EPscanCont.spacing; %convert to graph microvolts
+
+axes(EPscanCont.handles.graphPlot);
+if ~strcmpi(get(EPmain.handles.scanContData,'selectiontype'),'normal')
+    %right-click means move the green line
+
+    delete(EPscanCont.handles.plotLine);
+
+    EPscanCont.plotPoint=clickX;
+
+    drawPlots(EPscanCont.handles.topos.topo,EPscanCont.plotPoint);
+
+    updateFreqGraph
+else
+    %left-click means edit
+    theEpoch=ceil((EPscanCont.displayPoints(clickX))/EPscanCont.EPdata(theColor).Fs);
+    graphEpoch=ceil(EPscanCont.displayPoints(clickX)/EPscanCont.EPdata(theColor).Fs)-floor(EPscanCont.displayPoints(1)/EPscanCont.EPdata(theColor).Fs);
+    if theEpoch>length(EPscanCont.badTrials{theColor})
+        %extra time points tacked onto last epoch
+        theEpoch=theEpoch-1;
+        graphEpoch=graphEpoch-1;
+        endEpoch=EPscanCont.displayLength;
+    elseif (theEpoch==length(EPscanCont.badTrials{theColor})) && rem(EPscanCont.numPoints,EPscanCont.EPdata(theColor).Fs)
+        endEpoch=EPscanCont.displayLength;
+    else
+        endEpoch=graphEpoch*EPscanCont.EPdata(theColor).Fs-rem(EPscanCont.displayPoints(1)-1,EPscanCont.EPdata(theColor).Fs);
+    end
+    startEpoch=((graphEpoch-1)*EPscanCont.EPdata(theColor).Fs)+1-rem(EPscanCont.displayPoints(1)-1,EPscanCont.EPdata(theColor).Fs);
+    if (pos(2) < EPscanCont.graphCoords(2)) && (pos(2) >= (EPscanCont.graphCoords(2)-30))
+        %bad trial edit
+        if EPscanCont.editMode
+            EPscanCont.edited(theColor)=1;
+            if EPscanCont.badTrials{theColor}(theEpoch)
+                EPscanCont.badTrials{theColor}(theEpoch)=0;
+                delete(EPscanCont.handles.badTrials{theColor}(theEpoch));
+            else
+                EPscanCont.badTrials{theColor}(theEpoch)=1;
+                EPscanCont.handles.badTrials{theColor}(theEpoch)=patch([startEpoch startEpoch endEpoch endEpoch],...
+                    [-EPscanCont.spacing*length(EPscanCont.displayChans) EPscanCont.spacing*length(EPscanCont.displayChans) EPscanCont.spacing*length(EPscanCont.displayChans) -EPscanCont.spacing*length(EPscanCont.displayChans)],'red','EdgeColor','red');
+                alpha(EPscanCont.handles.badTrials{theColor}(theEpoch),.5);
+            end
+        end
+    else
+        %trial bad chan edit
+        if EPscanCont.editMode
+            EPscanCont.edited(theColor)=1;
+            theChan=ceil(-(clickY-25)/EPscanCont.spacing);
+            if theChan < 1
+                theChan=1;
+            elseif theChan > length(EPscanCont.displayChans)
+                theChan=length(EPscanCont.displayChans);
+            end
+            theChan=EPscanCont.displayChans(theChan);
+            if EPscanCont.trialBadChans{theColor}(theChan,theEpoch) ==-1
+                EPscanCont.trialBadChans{theColor}(theChan,theEpoch)=0;
+                delete(EPscanCont.handles.trialBadChans{theColor}(theChan,theEpoch));
+            else
+                EPscanCont.trialBadChans{theColor}(theChan,theEpoch)=-1;
+                axes(EPscanCont.handles.graphPlot);
+                EPscanCont.handles.trialBadChans{theColor}(theChan,theEpoch)=patch([startEpoch startEpoch endEpoch endEpoch],...
+                    [-EPscanCont.spacing*(theChan-.25) -EPscanCont.spacing*(theChan-1.25) -EPscanCont.spacing*(theChan-1.25) -EPscanCont.spacing*(theChan-.25)],'red','EdgeColor','red');
+                alpha(EPscanCont.handles.trialBadChans{theColor}(theChan,theEpoch),.5);
+            end
+        end
+    end
+end
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function drawPlots(theHandles,thePoint)
+%Redraw the plots
+
+global EPscanCont EPmain EPdataset
+
+set(EPscanCont.handles.topos.sample,'String',EPscanCont.displayPoints(EPscanCont.plotPoint))
+set(EPscanCont.handles.topos.time,'String', ep_ms2time((EPscanCont.displayPoints(EPscanCont.plotPoint))*(1000/EPscanCont.EPdata(EPscanCont.currentColor).Fs)))
+
+if ~isempty(thePoint)
+    if ~ishandle(EPscanCont.handles.plotLine)
+        axes(EPscanCont.handles.graphPlot);
+        if strcmp(EPscanCont.dataType,'VLT') || (strcmp(EPscanCont.dataType,'TFT') && (EPscanCont.freqShow ~= length(EPscanCont.freqList)))
+            EPscanCont.handles.plotLine=line([EPscanCont.plotPoint EPscanCont.plotPoint],[-length(EPscanCont.displayChans)*EPscanCont.spacing EPscanCont.spacing],'Color','green','LineWidth',3);
+        else
+            EPscanCont.handles.plotLine=line([EPscanCont.plotPoint EPscanCont.plotPoint],[1 EPscanCont.spacing*length(EPscanCont.displayChans)],'Color','green','LineWidth',3);
+        end
+    end
+    if strcmp(EPscanCont.dataType,'VLT') || (strcmp(EPscanCont.dataType,'TFT') && (EPscanCont.freqShow ~= length(EPscanCont.freqList)))
+        if any((EPscanCont.topos.listCodes(EPscanCont.topos.topoValue)<100) & (EPscanCont.topos.listCodes(EPscanCont.topos.topoValue)>0))
+            %if any of the topo plots are for voltage maps
+            plotData=zeros(EPscanCont.numChans,EPscanCont.numColors);
+            for iColor=1:EPscanCont.numColors
+                if EPmain.view.dataset(iColor) <= length(EPdataset.dataset)
+                    theData=EPscanCont.EPdata(iColor).data(find(ismember(EPscanCont.chanIndex{iColor},EPscanCont.hasLoc{iColor})),EPscanCont.displayPoints(thePoint),:,:,:,EPscanCont.freqPos);
+                    if strcmp(EPscanCont.dataType,'TFT')
+                        theData=abs(theData); %convert complex number to real number
+                        theData=theData/mean(diff(EPscanCont.EPdata(iColor).freqNames)); %convert to spectral density
+                        theData=theData.^2; %convert amplitude to power
+                        theData=log10(abs(theData))*10; %convert to dB log scaling
+                        tempVar=theData;
+                        tempVar(isinf(tempVar))=-flintmax;
+                        theData=tempVar; %log10 of zero is -inf.  Replace with maximum possible double-precision negative number.
+                    end
+                    theData=theData-EPscanCont.baseline(EPscanCont.hasLoc{iColor},iColor);
+                    plotData(find(ismember(EPscanCont.chanIndex{iColor},EPscanCont.hasLoc{iColor})),iColor)=theData;
+                end
+            end
+
+            theMin=inf;
+            theMax=-inf;
+            for iColor=1:EPscanCont.numColors
+                if EPmain.view.dataset(iColor) <= length(EPdataset.dataset)
+                    theMin=min(theMin,min(plotData(:,iColor)));
+                    theMax=max(theMax,max(plotData(:,iColor)));
+                end
+            end
+        end
+
+        for iTopo=1:EPscanCont.topoNum
+            topoValue=EPscanCont.topos.listCodes(EPscanCont.topos.topoValue(iTopo));
+            if topoValue==0
+                %nothing selected
+                cla(theHandles(iTopo));
+
+            elseif topoValue<100
+                %voltage plot
+                theColor=topoValue;
+                theEpoch=ceil((EPscanCont.displayPoints(thePoint))/EPscanCont.EPdata(theColor).Fs);
+                if theEpoch > size(EPscanCont.EPdata(theColor).analysis.badChans,2)
+                    theEpoch=size(EPscanCont.EPdata(theColor).analysis.badChans,2); %the stub is tacked onto the last epoch
+                end
+                goodChans=find(~ismember(EPscanCont.hasLoc{theColor},EPscanCont.chanIndex{theColor}(find(EPscanCont.EPdata(theColor).analysis.badChans(1,theEpoch,:)==-1))));
+                if ~isempty(goodChans)
+                    theData=plotData(EPscanCont.hasLoc{theColor}(goodChans),theColor);
+                    [Xi,Yi,Zi] = griddata(EPscanCont.x(goodChans),EPscanCont.y(goodChans),theData,[1:EPscanCont.gridSize]',[1:EPscanCont.gridSize],'linear');
+
+                    % figure(EPscanCont.handles.waves.frameFigure)
+                    axes(theHandles(iTopo))
+                    EPscanCont.handles.topoImage(iTopo) = imagesc(Zi);
+                    set(theHandles(iTopo),'XTickLabel','','YTickLabel','');
+                    set(EPscanCont.handles.topoImage(iTopo),'ButtonDownFcn',{@D3headPlot,theColor});
+                end
+            elseif topoValue<200
+                %eye-tracker plot
+                theColor=topoValue-100;
+
+                %prepare voltage coloring
+                if EPscanCont.chanShow==length(EPscanCont.chanList)
+                    colorData=zeros(length(EPscanCont.displayPoints),3);
+                else
+                    theData=squeeze(EPscanCont.EPdata(theColor).data(find(EPscanCont.chanIndex{theColor}==EPscanCont.chanShow),EPscanCont.displayPoints,:,:,:,EPscanCont.freqPos))';
+                    if strcmp(EPscanCont.dataType,'TFT')
+                        theData=abs(theData); %convert complex number to real number
+                        theData=theData/mean(diff(EPscanCont.EPdata(theColor).freqNames)); %convert to spectral density
+                        theData=theData.^2; %convert amplitude to power
+                        theData=log10(abs(theData))*10; %convert to dB log scaling
+                        tempVar=theData;
+                        tempVar(isinf(tempVar))=-flintmax;
+                        theData=tempVar; %log10 of zero is -inf.  Replace with maximum possible double-precision negative number.
+                    end
+                    colorData(:,1)=(theData-mean(theData))/max(theData-mean(theData));
+                    colorData(:,3)=(theData-mean(theData))/min(theData-mean(theData));
+                    colorData(colorData<0)=0;
+                end
+
+                stimPict=[];
+                if ~isempty(EPscanCont.stimList{theColor})
+                    whichPict=max(find([EPscanCont.stimList{theColor}.sample] <= EPscanCont.displayPoints(thePoint)));
+                    if ~isempty(whichPict)
+                        stimPict=EPscanCont.EPdata(theColor).stims(EPscanCont.stimList{theColor}(whichPict).stim).image;
+                    end
+                end
+
+                Xdata=squeeze(EPscanCont.EPdata(theColor).data(find(EPscanCont.chanIndex{theColor}==EPscanCont.XEYchan{theColor}),EPscanCont.displayPoints,:,:,:,1));
+                Ydata=squeeze(EPscanCont.EPdata(theColor).data(find(EPscanCont.chanIndex{theColor}==EPscanCont.YEYchan{theColor}),EPscanCont.displayPoints,:,:,:,1));
+                if EPscanCont.eyeScaleX{theColor} < 0
+                    Xdata=((Xdata-EPscanCont.eyeCenterX{theColor})/(-EPscanCont.eyeScaleX{theColor}))+.5;
+                    Xdata=1-Xdata;
+                else
+                    Xdata=((Xdata-EPscanCont.eyeCenterX{theColor})/EPscanCont.eyeScaleX{theColor})+.5;
+                end
+                if EPscanCont.eyeScaleX{theColor} < 0
+                    Ydata=((Ydata-EPscanCont.eyeCenterY{theColor})/(-EPscanCont.eyeScaleY{theColor}))+.5;
+                    Ydata=1-Ydata;
+                else
+                    Ydata=((Ydata-EPscanCont.eyeCenterY{theColor})/EPscanCont.eyeScaleY{theColor})+.5;
+                end
+                cla(theHandles(iTopo));
+                axes(theHandles(iTopo));
+                axis([0 1 0 1])
+                % set(theHandles(iTopo),'Units','normalized')
+                hold on
+                if ~isempty(stimPict)
+                    imageSize=size(stimPict);
+                    imageMax=max(imageSize(1),imageSize(2));
+                    x=max(1,round((imageSize(1)-imageSize(2))/2))/imageMax;
+                    y=max(1,round((imageSize(2)-imageSize(1))/2))/imageMax;
+                    EPscanCont.handles.topos.image(iTopo)=image([x 1-x],[1-y y],stimPict);
+                    set(EPscanCont.handles.topos.image(iTopo),'ButtonDownFcn',{@ep_expandEyePlot,theColor});
+                end
+                if EPscanCont.chanShow~=length(EPscanCont.chanList)
+                    for iPoint=1:EPscanCont.displayLength-1
+                        plot(Xdata(iPoint:iPoint+1),Ydata(iPoint:iPoint+1),'color',colorData(iPoint,:));
+                    end
+                else
+                    plot(Xdata,Ydata,'color','black');
+                end
+                plot(Xdata(thePoint),Ydata(thePoint),'color','green','Marker','*','MarkerSize',2);
+                hold off
+                set(theHandles(iTopo),'ButtonDownFcn',{@ep_expandEyePlot,theColor});
+
+            elseif topoValue<300
+                %EOG plot
+                theColor=topoValue-200;
+
+                %prepare voltage coloring
+                if EPscanCont.chanShow==length(EPscanCont.chanList)
+                    colorData=zeros(length(EPscanCont.displayPoints),3);
+                else
+                    theData=squeeze(EPscanCont.EPdata(theColor).data(find(EPscanCont.chanIndex{theColor}==EPscanCont.chanShow),EPscanCont.displayPoints,:,:,:,EPscanCont.freqPos))';
+                    if strcmp(EPscanCont.dataType,'TFT')
+                        theData=abs(theData); %convert complex number to real number
+                        theData=theData/mean(diff(EPscanCont.EPdata(theColor).freqNames)); %convert to spectral density
+                        theData=theData.^2; %convert amplitude to power
+                        theData=log10(abs(theData))*10; %convert to dB log scaling
+                        tempVar=theData;
+                        tempVar(isinf(tempVar))=-flintmax;
+                        theData=tempVar; %log10 of zero is -inf.  Replace with maximum possible double-precision negative number.
+                    end
+                    colorData(:,1)=(theData-mean(theData))/max(theData-mean(theData));
+                    colorData(:,3)=(theData-mean(theData))/min(theData-mean(theData));
+                    colorData(colorData<0)=0;
+                end
+
+                stimPict=[];
+                if ~isempty(EPscanCont.stimList{theColor})
+                    whichPict=max(find([EPscanCont.stimList{theColor}.sample] <= EPscanCont.displayPoints(thePoint)));
+                    if ~isempty(whichPict)
+                        stimPict=EPscanCont.EPdata(theColor).stims(EPscanCont.stimList{theColor}(whichPict).stim).image;
+                    end
+                end
+
+                Xdata=squeeze(EPscanCont.EPdata(theColor).data(find(EPscanCont.chanIndex{theColor}==EPscanCont.HSACchan),EPscanCont.displayPoints,:,:,:,1));
+                Ydata=squeeze(EPscanCont.EPdata(theColor).data(find(EPscanCont.chanIndex{theColor}==EPscanCont.VSACchan),EPscanCont.displayPoints,:,:,:,1));
+                Xdata=(-(Xdata-EPscanCont.sacCenterX{iColor})/EPscanCont.sacScaleX{iColor})+.5;
+                Ydata=(-(Ydata-EPscanCont.sacCenterY{iColor})/EPscanCont.sacScaleY{iColor})+.5;
+                cla(theHandles(iTopo));
+                axes(theHandles(iTopo));
+                axis([0 1 0 1])
+                % axis([-EPscanCont.SACCsize{theColor} EPscanCont.SACCsize{theColor} -EPscanCont.SACCsize{theColor} EPscanCont.SACCsize{theColor}])
+                set(theHandles(iTopo),'Units','normalized')
+                hold on
+                if ~isempty(stimPict)
+                    imageSize=size(stimPict);
+                    imageMax=max(imageSize(1),imageSize(2));
+                    x=max(1,round((imageSize(1)-imageSize(2))/2))/imageMax;
+                    y=max(1,round((imageSize(2)-imageSize(1))/2))/imageMax;
+                    EPscanCont.handles.topos.image(iTopo)=image([x 1-x],[1-y y],stimPict);
+                    set(EPscanCont.handles.topos.image(iTopo),'ButtonDownFcn',{@ep_expandSaccPlot,theColor});
+                end
+                if EPscanCont.chanShow~=length(EPscanCont.chanList)
+                    for iPoint=1:EPscanCont.displayLength-1
+                        if ((iPoint+EPscanCont.ETlatency)>EPscanCont.displayLength)||((iPoint+EPscanCont.ETlatency)<1)
+                            theColor='magenta';
+                        else
+                            theColor=colorData(iPoint+EPscanCont.ETlatency,:);
+                        end
+                        plot(Xdata(iPoint:iPoint+1),Ydata(iPoint:iPoint+1),'color',theColor);
+                    end
+                else
+                    plot(Xdata,Ydata,'color','black');
+                end
+                plot(Xdata(thePoint),Ydata(thePoint),'color','green','Marker','*','MarkerSize',2);
+                hold off
+                set(theHandles(iTopo),'ButtonDownFcn',{@ep_expandSaccPlot,theColor});
+
+            elseif topoValue<400
+                %video
+                theColor=topoValue-300;
+                plotTime=EPscanCont.EPdata(theColor).timeNames(EPscanCont.displayPoints(thePoint));
+                videoTime=max(find(EPscanCont.EPdata(theColor).video(1).times<=plotTime));
+                if ~isempty(videoTime)
+                    axes(theHandles(iTopo))
+                    EPscanCont.handles.topos.image(iTopo) = imagesc(EPscanCont.EPdata(theColor).video(1).frames(videoTime).cdata);
+                else
+                    cla(theHandles(iTopo));
+                end
+            else
+                error('Programmer error: topoValue not recognized.')
+            end
+        end
+
+        if all(theHandles==EPscanCont.handles.topos.topo)
+            %update the voltage read-outs
+            if strcmp(EPscanCont.dataType,'VLT') || (strcmp(EPscanCont.dataType,'TFT') && (EPscanCont.freqShow ~= length(EPscanCont.freqList)))
+                for iChan=1:length(EPscanCont.displayChans)
+                    set(EPscanCont.handles.plotVolt(iChan),'String',sprintf('%04.0f',EPscanCont.EPdata(theColor).data(find(EPscanCont.chanIndex{1}==EPscanCont.displayChans(iChan)),EPscanCont.displayPoints(thePoint))));
+                end
+            end
+        end
+    end
+else
+    %if no time point has been selected, then clear out the voltage maps
+    for iTopo=1:EPscanCont.topoNum
+        cla(theHandles(iTopo))
+    end
+    %clear the voltage read-outs
+    if strcmp(EPscanCont.dataType,'VLT') || (strcmp(EPscanCont.dataType,'TFT') && (EPscanCont.freqShow ~= length(EPscanCont.freqList)))
+        for iChan=1:length(EPscanCont.displayChans)
+            set(EPscanCont.handles.plotVolt(iChan),'String','');
+        end
+    end
+    if ishandle(EPscanCont.handles.plotLine)
+        delete(EPscanCont.handles.plotLine);
+    end
+end
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function startPlay(~,~)
+%Start play mode
+
+global EPscanCont
+
+EPscanCont.playMode=true;
+playRate=(4/EPscanCont.sampleSize); %time points advanced per cycle
+xChange=0;
+
+while EPscanCont.playMode
+    advancePoints=playRate;
+    if EPscanCont.numPoints >= (EPscanCont.displayPoints(end)+playRate)
+        EPscanCont.displayPoints=EPscanCont.displayPoints+advancePoints;
+        xChange=1;
+    elseif (EPscanCont.numPoints < (EPscanCont.displayPoints(end)+playRate)) && (EPscanCont.numPoints ~= EPscanCont.displayPoints(end))
+        advancePoints=EPscanCont.numPoints-EPscanCont.displayPoints(end);
+        EPscanCont.displayPoints=EPscanCont.displayPoints+advancePoints;
+        xChange=1;
+    elseif length(EPscanCont.displayPoints) >= EPscanCont.EPscanCont.plotPoint+advancePoints
+        EPscanCont.plotPoint=EPscanCont.plotPoint+advancePoints;
+    else
+        EPscanCont.playMode=false;
+    end
+
+    updateDisplay(xChange,0);
+end
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function startMovie(~,~)
+%Start recording movie
+
+global EPscanCont EPtictoc EPmain
+
+[outFileName, pathname] = uiputfile('*.*','Save:','myVideo.avi');
+if isempty(outFileName)
+    return
+end
+ep_tictoc('begin');
+
+EPscanCont.handleList=ep_disableGUI(EPmain.handles.scanContData);
+scrsz = EPmain.scrsz;
+numPoints=length(EPscanCont.displayPoints);
+EPscanCont.movie.writerObj=VideoWriter([pathname outFileName]);
+EPscanCont.movie.writerObj.FrameRate=1;
+open(EPscanCont.movie.writerObj);
+for iPoint=1:numPoints
+    ep_tictoc;
+    if EPtictoc.stop
+        EPtictoc.stop=0;
+        if isobject(EPscanCont.movie.writerObj)
+            close(EPscanCont.movie.writerObj);
+        end
+        ep_tictoc('end');
+        if ishandle(EPscanCont.handles.waves.frameFigure)
+            close(EPscanCont.handles.waves.frameFigure)
+        end
+        ep_disableGUI(EPmain.handles.scanContData,EPscanCont.handleList);
+        return;
+    end
+    EPscanCont.handles.waves.frameFigure = figure('Name', 'Scan Plot', 'NumberTitle', 'off', 'Position',[scrsz(3)/2 scrsz(4)/2 800 800], 'Units','normalized');
+
+    topoLoc=zeros(EPscanCont.topoNum,4); %coordinates of the topos
+    topoLoc(1,:)=[.1 .5 .4 .4];
+    topoLoc(2,:)=[.5 .5 .4 .4];
+    topoLoc(3,:)=[.1 .1 .4 .4];
+    topoLoc(4,:)=[.5 .1 .4 .4];
+
+    for iTopo=1:EPscanCont.topoNum
+        figure(EPscanCont.handles.waves.frameFigure)
+        EPscanCont.handles.movies.topo(iTopo) = axes('Units','normalized','position',topoLoc(iTopo,:));
+        set(EPscanCont.handles.movies.topo(iTopo),'XTickLabel','','YTickLabel','','XTick',[],'YTick',[]);
+        axis([0 1 0 1])
+    end
+
+    EPscanCont.plotPoint=iPoint;
+
+    delete(EPscanCont.handles.plotLine);
+
+    drawPlots(EPscanCont.handles.movies.topo,EPscanCont.plotPoint);
+
+    theFrame=getframe(EPscanCont.handles.waves.frameFigure);
+    if iPoint==1
+        frameSize=size(theFrame.cdata);
+    else
+        theFrame.cdata = imresize(theFrame.cdata,frameSize(1:2));
+    end
+    writeVideo(EPscanCont.movie.writerObj,theFrame);
+    close(EPscanCont.handles.waves.frameFigure)
+end
+close(EPscanCont.movie.writerObj);
+ep_tictoc('end');
+ep_disableGUI(EPmain.handles.scanContData,EPscanCont.handleList);
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function changeCurrent(xChange,yChange)
+%Redraw the display
+
+global EPscanCont EPtictoc
+
+EPscanCont.currentColor=EPscanCont.topos.legendNumbers(get(EPscanCont.handles.currentColor,'Value'));
+theColor=EPscanCont.currentColor;
+
+for iChan=1:EPscanCont.numChans
+    ep_tictoc;if EPtictoc.stop;return;end
+    theChan=find(EPscanCont.chanIndex{theColor}==EPscanCont.displayChans(iChan));
+    if EPscanCont.globalBadChans{theColor}(theChan)==1
+        EPscanCont.lineStyles{iChan}=':';
+    else
+        EPscanCont.lineStyles{iChan}='-';
+    end
+end
+
+if ~all(cell2mat(cellfun(@isempty,EPscanCont.EYEsize,'UniformOutput',false))) && ~all(cell2mat(cellfun(@isnan,EPscanCont.EYEsize,'UniformOutput',false)))
+    set(EPscanCont.handles.topos.eyeCenterX,'String',EPscanCont.eyeCenterX{theColor});
+    set(EPscanCont.handles.topos.eyeCenterY,'String',EPscanCont.eyeCenterY{theColor});
+    set(EPscanCont.handles.topos.eyeScaleX,'String',EPscanCont.eyeScaleX{theColor});
+    set(EPscanCont.handles.topos.eyeScaleY,'String',EPscanCont.eyeScaleY{theColor});
+end
+
+if ~all(cell2mat(cellfun(@isempty,EPscanCont.SACCsize,'UniformOutput',false))) && ~all(cell2mat(cellfun(@isnan,EPscanCont.SACCsize,'UniformOutput',false)))
+    set(EPscanCont.handles.topos.sacCenterX,'String',EPscanCont.sacCenterX{theColor});
+    set(EPscanCont.handles.topos.sacCenterY,'String',EPscanCont.sacCenterY{theColor});
+    set(EPscanCont.handles.topos.sacScaleX,'String',EPscanCont.sacScaleX{theColor});
+    set(EPscanCont.handles.topos.sacScaleY,'String',EPscanCont.sacScaleY{theColor});
+end
+
+updateDisplay(1,0);
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function updateDisplay(xChange,yChange)
+%Redraw the display
+
+global EPscanCont EPmain EPdataset
+
+theColor=EPscanCont.currentColor;
+
+if yChange
+    if ~isempty(EPscanCont.handles.chanNames)
+        for iChan=1:length(EPscanCont.handles.chanNames)
+            delete(EPscanCont.handles.chanNames(iChan));
+            delete(EPscanCont.handles.plotVolt(iChan));
+        end
+    end
+
+    lineColor='black';
+    EPscanCont.handles.chanNames=[];
+    for iChan=1:length(EPscanCont.displayChans)
+        theChan=EPscanCont.displayChans(iChan);
+        EPscanCont.handles.chanNames(iChan)=uicontrol('Style','togglebutton','HorizontalAlignment','left','String', EPscanCont.chanNames{theChan},'FontSize',EPmain.fontsize,...
+            'ForegroundColor',lineColor,'Value', EPscanCont.globalBadChans{theColor}(theChan),'Callback', {@globalBadChans,theChan},...
+            'Position',[110 EPmain.scrsz(4)-120-EPscanCont.graphCoords(4)*(1/length(EPscanCont.displayChans))*(iChan-1) 50 20]);
+        EPscanCont.handles.plotVolt(iChan)=uicontrol('Style','text','HorizontalAlignment','left','String', '0','FontSize',EPmain.fontsize,...
+            'Position',[EPscanCont.graphCoords(3)+EPscanCont.graphCoords(1)+5 EPmain.scrsz(4)-120-EPscanCont.graphCoords(4)*(1/length(EPscanCont.displayChans))*(iChan-1) 40 20]);
+    end
+end
+
+%update the current data matrix
+if xChange || yChange
+    if strcmp(EPscanCont.dataType,'VLT') || (strcmp(EPscanCont.dataType,'TFT') && (EPscanCont.freqShow ~= length(EPscanCont.freqList)))
+        EPscanCont.currentData=zeros(length(EPscanCont.displayChans),length(EPscanCont.displayPoints),4);
+    else
+        EPscanCont.currentData=zeros(length(EPscanCont.displayChans)*EPscanCont.spacing,length(EPscanCont.displayPoints),4);
+    end
+    for iColor=1:EPscanCont.numColors
+        if EPmain.view.dataset(iColor) <= length(EPdataset.dataset)
+            for iChan=1:length(EPscanCont.EPdata(iColor).chanNames)
+                EPscanCont.baseline(iChan,iColor)=mean(EPscanCont.EPdata(iColor).data(EPscanCont.chanIndex{iColor}(iChan),EPscanCont.displayPoints,:,:,:,EPscanCont.freqPos),2,'omitnan'); %baselines for all channels (ordered by index) based on displayed time points
+            end
+            for iChan=1:length(EPscanCont.displayChans)
+                theChan=EPscanCont.displayChans(iChan);
+                theDataChan=find(EPscanCont.chanIndex{iColor}==theChan);
+                if isempty(theDataChan)
+                    %                     EPscanCont.baseline(iChan,iColor)=0;
+                    EPscanCont.currentData(iChan,:,iColor)=0;
+                else
+                    if strcmp(EPscanCont.dataType,'VLT') || (strcmp(EPscanCont.dataType,'TFT') && (EPscanCont.freqShow ~= length(EPscanCont.freqList)))
+                        waveData=squeeze(EPscanCont.EPdata(iColor).data(theDataChan,EPscanCont.displayPoints,:,:,:,EPscanCont.freqPos));
+                        goodPoints=~isnan(waveData);
+                        %                         EPscanCont.baseline(iChan,iColor)=mean(waveData(goodPoints));
+                        EPscanCont.currentData(iChan,:,iColor)=((EPscanCont.EPdata(iColor).data(theDataChan,EPscanCont.displayPoints,:,:,:,EPscanCont.freqPos)-EPscanCont.baseline(EPscanCont.displayChans(iChan),iColor))*EPscanCont.scaling(theChan));
+                    elseif EPscanCont.FFTunits==1 %complex numbers
+                        if ismember(theChan,EPscanCont.EEGchans)
+                            EPscanCont.currentData((iChan-1)*EPscanCont.spacing+1:iChan*EPscanCont.spacing-(EPscanCont.spacing/2),:,iColor)=real(squeeze((EPscanCont.EPdata(iColor).data(theDataChan,EPscanCont.displayPoints,:,:,:,EPscanCont.startBins:EPscanCont.lastBins))*EPscanCont.scaling(theChan))');
+                            EPscanCont.currentData((iChan-1)*EPscanCont.spacing+1+(EPscanCont.spacing/2):iChan*EPscanCont.spacing,:,iColor)=imag(squeeze((EPscanCont.EPdata(iColor).data(theDataChan,EPscanCont.displayPoints,:,:,:,EPscanCont.startBins:EPscanCont.lastBins))*EPscanCont.scaling(theChan))');
+                        else
+                            EPscanCont.currentData((iChan-1)*EPscanCont.spacing+1:iChan*EPscanCont.spacing,:,iColor)=repmat(real(squeeze((EPscanCont.EPdata(iColor).data(theDataChan,EPscanCont.displayPoints,:,:,:,1))*EPscanCont.scaling(theChan))),EPscanCont.spacing,1);
+                        end
+                    else
+                        if ismember(theChan,EPscanCont.EEGchans)
+                            EPscanCont.currentData((iChan-1)*EPscanCont.spacing+1:iChan*EPscanCont.spacing,:,iColor)=squeeze((EPscanCont.EPdata(iColor).data(theDataChan,EPscanCont.displayPoints,:,:,:,EPscanCont.startBins:EPscanCont.lastBins))*EPscanCont.scaling(theChan))';
+                        else
+                            EPscanCont.currentData((iChan-1)*EPscanCont.spacing+1:iChan*EPscanCont.spacing,:,iColor)=repmat(squeeze((EPscanCont.EPdata(iColor).data(theDataChan,EPscanCont.displayPoints,:,:,:,1))*EPscanCont.scaling(theChan)),EPscanCont.spacing,1);
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    if strcmp(EPscanCont.dataType,'TFT')
+        if EPscanCont.freqShow == length(EPscanCont.freqList)
+            theRows=logical(kron(ismember(EPscanCont.displayChans,find(ismember(EPdataset.dataset(EPmain.view.dataset(1)).chanTypes,{'EEG','REG'})))',ones(EPscanCont.spacing,1)));
+        else
+            theRows=ismember(EPscanCont.displayChans,find(ismember(EPdataset.dataset(EPmain.view.dataset(1)).chanTypes,{'EEG','REG'})))';
+        end
+        if (EPscanCont.FFTunits > 1)
+            EPscanCont.currentData(theRows,:,1)=abs(EPscanCont.currentData(theRows,:,1)); %convert complex number to real number
+        end
+        EPscanCont.currentData(theRows,:,1)=EPscanCont.currentData(theRows,:,1)/sqrt(mean(diff(EPscanCont.EPdata(theColor).freqNames))); %convert to spectral density
+        if EPscanCont.FFTunits > 2
+            EPscanCont.currentData(theRows,:,1)=EPscanCont.currentData(theRows,:,1).^2; %convert amplitude to power
+        end
+        if (EPscanCont.FFTunits == 4)
+            EPscanCont.currentData(theRows,:,1)=log10(abs(EPscanCont.currentData(theRows,:,1)))*10; %convert to dB log scaling
+            tempVar=EPscanCont.currentData(theRows,:,1);
+            tempVar(isinf(tempVar))=-flintmax;
+            EPscanCont.currentData(theRows,:,1)=tempVar; %log10 of zero is -inf.  Replace with maximum possible double-precision negative number.
+        end
+    end
+
+    if strcmp(EPscanCont.dataType,'VLT') || (strcmp(EPscanCont.dataType,'TFT') && (EPscanCont.freqShow ~= length(EPscanCont.freqList)))
+        for iColor=1:EPscanCont.numColors
+            if EPmain.view.dataset(iColor) <= length(EPdataset.dataset)
+                for iChan=1:length(EPscanCont.displayChans)
+                    EPscanCont.currentData(iChan,:,iColor)=EPscanCont.currentData(iChan,:,iColor)-EPscanCont.spacing*(iChan-1);
+                end
+            end
+        end
+    end
+end
+
+if xChange && EPscanCont.showLabels
+    for iEvent=1:length(EPscanCont.handles.events)
+        if isgraphics(EPscanCont.handles.events(iEvent))
+            delete(EPscanCont.handles.events(iEvent));
+        end
+    end
+    EPscanCont.handles.events=[];
+end
+EPscanCont.handles.eventLines=[];
+
+if xChange
+    %add epochmarks below the graph plot
+    axes(EPscanCont.handles.epochMarks);
+    EPscanCont.handles.epochMarksPlot=plot([1:EPscanCont.displayLength],EPscanCont.epochMarks{theColor}(EPscanCont.displayPoints),'color','black');
+    axis([1 EPscanCont.displayLength 0 1])
+    set(EPscanCont.handles.epochMarks,'XTickLabel','','YTickLabel','','XTick',[],'YTick',[]);
+end
+
+%update the current event to somewhere around the middle of the display area
+if xChange
+    if ~isempty(EPscanCont.eventList{theColor})
+        EPscanCont.starredEventList=cell(length(EPscanCont.eventList{theColor}),1);
+        EPscanCont.starredSampleEventList=cell(length(EPscanCont.eventList{theColor}),1);
+        for iEvent=1:length(EPscanCont.eventList{theColor})
+            if ismember(round(EPscanCont.EPdata(theColor).events{1}(iEvent).sample),EPscanCont.displayPoints)
+                EPscanCont.starredEventList{find(iEvent==EPscanCont.alphabetEventOrder{theColor})}=['*' EPscanCont.eventList{theColor}{iEvent}];
+                sampleOrderNumber=find(iEvent==EPscanCont.sampleEventOrder{theColor});
+                EPscanCont.starredSampleEventList{sampleOrderNumber}=['*' EPscanCont.eventList{theColor}{iEvent}];
+            else
+                EPscanCont.starredEventList{find(iEvent==EPscanCont.alphabetEventOrder{theColor})}=EPscanCont.eventList{theColor}{iEvent};
+                EPscanCont.starredSampleEventList{find(iEvent==EPscanCont.sampleEventOrder{theColor})}=EPscanCont.eventList{theColor}{iEvent};
+            end
+        end
+        set(EPscanCont.handles.firstEvent,'String',EPscanCont.starredEventList);
+        set(EPscanCont.handles.lastEvent,'String',EPscanCont.starredEventList);
+        set(EPscanCont.handles.currentEvent,'String',EPscanCont.starredSampleEventList);
+
+        if isempty(EPscanCont.plotPoint)
+            [a currentEvent]=min(abs([EPscanCont.EPdata(theColor).events{1}.sample]-EPscanCont.displayPoints(round(EPscanCont.displayLength/2))));
+            if ~isempty(currentEvent)
+                EPscanCont.currentEvent=find(currentEvent==EPscanCont.sampleEventOrder{theColor});
+                EPscanCont.currentkey=length(EPscanCont.EPdata(theColor).events{1}(currentEvent).keys);
+                EPscanCont.plotPoint=find(round(EPscanCont.EPdata(theColor).events{1}(currentEvent).sample)==EPscanCont.displayPoints);
+                set(EPscanCont.handles.currentEvent,'Value',EPscanCont.currentEvent);
+            else
+                EPscanCont.plotPoint=round(EPscanCont.displayLength/2);
+            end
+        end
+    else
+        EPscanCont.plotPoint=round(EPscanCont.displayLength/2);
+    end
+end
+
+%update the current event info
+if isempty(EPscanCont.currentEvent)
+    set(EPscanCont.handles.addEvent,'enable','on');
+    set(EPscanCont.handles.minusEvent,'enable','off');
+    set(EPscanCont.handles.eventType,'enable','off');
+    set(EPscanCont.handles.eventValue,'enable','off');
+    set(EPscanCont.handles.eventSample,'enable','off');
+    set(EPscanCont.handles.eventDuration,'enable','off');
+    set(EPscanCont.handles.eventKeys,'enable','off');
+    set(EPscanCont.handles.addKey,'enable','off');
+    set(EPscanCont.handles.minusKey,'enable','off');
+    set(EPscanCont.handles.keyCode,'enable','off');
+    set(EPscanCont.handles.keyData,'enable','off');
+    set(EPscanCont.handles.keyType,'enable','off');
+    set(EPscanCont.handles.keyDescrip,'enable','off');
+else
+    set(EPscanCont.handles.addEvent,'enable','on');
+    set(EPscanCont.handles.minusEvent,'enable','on');
+    set(EPscanCont.handles.eventType,'enable','on');
+    set(EPscanCont.handles.eventValue,'enable','on');
+    set(EPscanCont.handles.eventSample,'enable','on');
+    set(EPscanCont.handles.eventDuration,'enable','on');
+    set(EPscanCont.handles.eventKeys,'enable','on');
+    set(EPscanCont.handles.addKey,'enable','on');
+    set(EPscanCont.handles.minusKey,'enable','on');
+    set(EPscanCont.handles.keyCode,'enable','on');
+    set(EPscanCont.handles.keyData,'enable','on');
+    set(EPscanCont.handles.keyType,'enable','on');
+    set(EPscanCont.handles.keyDescrip,'enable','on');
+
+    theCurrentEvent=EPscanCont.sampleEventOrder{theColor}(EPscanCont.currentEvent);
+    set(EPscanCont.handles.eventType,'String',EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).type);
+    set(EPscanCont.handles.eventValue,'String',EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).value);
+    set(EPscanCont.handles.eventSample,'String',EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).sample);
+    set(EPscanCont.handles.eventDuration,'String',EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).duration);
+
+    theString=cell(length(EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).keys),1);
+    for iKey=1:length(EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).keys)
+        theString{iKey}=num2str(iKey);
+    end
+    set(EPscanCont.handles.eventKeys,'String',theString);
+    set(EPscanCont.handles.eventKeys,'Value',EPscanCont.currentkey);
+
+    if EPscanCont.currentkey
+        keyCode=EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).keys(EPscanCont.currentkey).code;
+        keyData=EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).keys(EPscanCont.currentkey).data;
+        keyType=EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).keys(EPscanCont.currentkey).datatype;
+        keyDescrip=EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).keys(EPscanCont.currentkey).description;
+    else
+        keyCode='';
+        keyData='';
+        keyType='';
+        keyDescrip='';
+    end
+    set(EPscanCont.handles.keyCode,'String',keyCode);
+    set(EPscanCont.handles.keyData,'String',keyData);
+    set(EPscanCont.handles.keyType,'String',keyType);
+    set(EPscanCont.handles.keyDescrip,'String',keyDescrip);
+end
+
+%redraw the data graph
+cla(EPscanCont.handles.graphPlot);
+axes(EPscanCont.handles.graphPlot);
+if strcmp(EPscanCont.dataType,'VLT') || (strcmp(EPscanCont.dataType,'TFT') && (EPscanCont.freqShow ~= length(EPscanCont.freqList)))
+    for iColor=1:EPscanCont.numColors
+        if EPmain.view.dataset(iColor) <= length(EPdataset.dataset)
+            for iChan=1:length(EPscanCont.displayChans)
+                hold on
+                EPscanCont.handles.graphChans{iColor}=plot([1:EPscanCont.displayLength],squeeze(EPscanCont.currentData(iChan,:,iColor)),'color',EPmain.preferences.view.color(iColor).RGB,'LineStyle',EPscanCont.lineStyles{EPscanCont.displayChans(iChan)});
+                hold off
+            end
+        end
+    end
+    axis([1 EPscanCont.displayLength -length(EPscanCont.displayChans)*EPscanCont.spacing EPscanCont.spacing])
+    if ~isempty(EPscanCont.plotPoint)
+        EPscanCont.handles.plotLine=line([EPscanCont.plotPoint EPscanCont.plotPoint],[-length(EPscanCont.displayChans)*EPscanCont.spacing EPscanCont.spacing],'Color','green','LineWidth',3);
+    end
+else
+    EPscanCont.handles.TFTgraph = imagesc([1 EPscanCont.displayLength],[1 EPscanCont.spacing*length(EPscanCont.displayChans)],squeeze(EPscanCont.currentData(:,:,1)));
+    axis([1 EPscanCont.displayLength 1 EPscanCont.spacing*length(EPscanCont.displayChans)])
+    if ~isempty(EPscanCont.plotPoint)
+        EPscanCont.handles.plotLine=line([EPscanCont.plotPoint EPscanCont.plotPoint],[1 EPscanCont.spacing*length(EPscanCont.displayChans)],'Color','green','LineWidth',3);
+    end
+end
+set(EPscanCont.handles.topos.sample,'String',EPscanCont.displayPoints(EPscanCont.plotPoint))
+set(EPscanCont.handles.topos.time,'String', ep_ms2time((EPscanCont.displayPoints(EPscanCont.plotPoint))*(1000/EPscanCont.EPdata(EPscanCont.currentColor).Fs)))
+
+set(EPscanCont.handles.graphPlot,'XTickLabel','','YTickLabel','','XTick',[],'YTick',[]);
+if (EPmain.preferences.view.positive ==2) || (strcmp(EPscanCont.dataType,'TFT') && (EPscanCont.freqShow == length(EPscanCont.freqList)))
+    set(EPscanCont.handles.graphPlot,'YDir','reverse')
+else
+    set(EPscanCont.handles.graphPlot,'YDir','normal')
+end
+
+%redraw the events
+eventLabels(EPscanCont.currentColor,xChange);
+
+%redraw the bad data markings
+
+if EPscanCont.editMode
+    badDataMarking
+end
+
+set(EPscanCont.handles.displayStart,'String', ep_ms2time((EPscanCont.displayPoints(1)-1)*(1000/EPscanCont.EPdata(theColor).Fs)));
+set(EPscanCont.handles.displayEnd,'String', ep_ms2time(EPscanCont.displayPoints(end)*(1000/EPscanCont.EPdata(theColor).Fs)));
+
+drawPlots(EPscanCont.handles.topos.topo,EPscanCont.plotPoint);
+
+updateFreqGraph
+
+drawnow
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function D3headPlot(src,eventdata,theCell)
+global EPscanCont EPmain EPdataset
+
+disp('Using EEGlab function headplot to perform 3D head display.');
+
+theData=squeeze(EPscanCont.EPdata(theCell).data(find(ismember(EPscanCont.chanIndex{theCell},EPscanCont.hasLoc{theCell})),EPscanCont.displayPoints(EPscanCont.plotPoint))-EPscanCont.baseline(EPscanCont.hasLoc{theCell},theCell));
+
+theMin=inf;
+theMax=-inf;
+for iColor=1:EPscanCont.numColors
+    if EPmain.view.dataset(iColor) <= length(EPdataset.dataset)
+        theMin=min(theMin,min(EPscanCont.EPdata(iColor).data(find(ismember(EPscanCont.chanIndex{iColor},EPscanCont.hasLoc{theCell})),EPscanCont.displayPoints(EPscanCont.plotPoint))-EPscanCont.baseline(EPscanCont.hasLoc{theCell},theCell)));
+        theMax=max(theMax,max(EPscanCont.EPdata(iColor).data(find(ismember(EPscanCont.chanIndex{iColor},EPscanCont.hasLoc{theCell})),EPscanCont.displayPoints(EPscanCont.plotPoint))-EPscanCont.baseline(EPscanCont.hasLoc{theCell},theCell)));
+    end
+end
+
+%check to see if spline file needs to be generated
+if ~isempty(EPscanCont.EPdata(theCell).ced) && ~any(strcmp(EPscanCont.EPdata(theCell).ced,{'none','internal'}))
+    [pathstr, name, ext] = fileparts(EPscanCont.EPdata(theCell).ced);
+    CEDloc=which(EPscanCont.EPdata(theCell).ced);
+    if isempty(CEDloc)
+        name=EPscanCont.EPdata(theCell).dataName;
+        CEDloc=[pwd filesep 'temp'];
+    end
+else
+    name=EPscanCont.EPdata(theCell).dataName;
+    CEDloc=[pwd filesep 'temp'];
+end
+[eeglabPath,a,b] = fileparts(which('eeglab'));
+
+theMesh=which('mheadnew.mat');
+if isempty(theMesh)
+    theMesh=[eeglabPath filesep 'functions' filesep 'resources' filesep 'mheadnew.mat'];
+    if ~exist(theMesh,'file')
+        disp('Sorry, no mesh file available.  You may need to install EEGlab.')
+        return;
+    end
+end
+
+if isempty(which([name '.spl']))
+    [pathstr2, name2, ext2] = fileparts(CEDloc);
+    dataEloc=EPscanCont.EPdata(theCell).eloc;
+    % dataEloc=[dataEloc, EPscanCont.EPdata(theCell).implicit];
+    chanList=zeros(length(dataEloc),1);
+    for iChan=1:length(dataEloc)
+        if ~isempty(dataEloc(iChan).X)% && ~EPscanCont.EPdata(theCell).analysis.badChans(1,theCell,theChan)
+            chanList(iChan)=1;
+            dataEloc(iChan).X=dataEloc(iChan).cX;
+            dataEloc(iChan).Y=dataEloc(iChan).cY;
+            dataEloc(iChan).Z=dataEloc(iChan).cZ;
+        end
+    end
+    chanList=find(chanList);
+    dataEloc=dataEloc(chanList);
+
+    ep_headplot('setup', dataEloc, [pathstr2 filesep name '.spl'],'meshfile',theMesh); %save spline file in same place as the ced file.
+end
+
+
+figure
+[hdaxis cbaraxis] = headplot(theData,which([name '.spl']),'cbar',0,'maplimits',[theMin theMax],'labels',2);
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function showEventLabels(src,eventdata)
+%toggles the event labels on and off
+global EPscanCont
+
+EPscanCont.showLabels=get(EPscanCont.handles.showLabels,'Value');
+
+if ~EPscanCont.showLabels
+    for iEvent=1:length(EPscanCont.handles.events)
+        if isgraphics(EPscanCont.handles.events(iEvent))
+            delete(EPscanCont.handles.events(iEvent));
+        end
+    end
+    EPscanCont.handles.events=[];
+else
+    eventLabels(EPscanCont.currentColor,1);
+end
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function eventLabels(theColor,xChange)
+%displays the event labels
+global EPscanCont EPmain
+
+if ~isempty(EPscanCont.EPdata(theColor).events{1})
+    eventList=find(ismember(round([EPscanCont.EPdata(theColor).events{1}.sample]),EPscanCont.displayPoints));
+    if xChange
+        EPscanCont.handles.events=gobjects(length(eventList),1);
+    end
+    labelPos=EPscanCont.graphCoords(3)/EPscanCont.displayLength;
+    [~,eventOrder]=sort([EPscanCont.EPdata(theColor).events{1}(eventList).sample]);%display event labels in order to minimize obscuring other labels.
+    for iEvent=1:length(eventList)
+        theEvent=eventList(eventOrder(iEvent));
+        theEventValue=EPscanCont.EPdata(theColor).events{1}(theEvent).value;
+        if ~isempty(theEventValue)
+            if xChange
+                if EPscanCont.showLabels
+                    if strcmp(EPscanCont.EPdata(theColor).events{1}(theEvent).type,'eye-tracker')
+                        yPos=90;
+                    else
+                        yPos=100;
+                    end
+                    EPscanCont.handles.events(theEvent)=uicontrol('Style','text','HorizontalAlignment','left','String', theEventValue,'FontSize',EPmain.fontsize,...
+                        'Position',[EPscanCont.graphCoords(1)+labelPos*(EPscanCont.EPdata(theColor).events{1}(theEvent).sample-EPscanCont.displayPoints(1)+1) EPmain.scrsz(4)-yPos 100 10]);
+                end
+            end
+            if strcmp(EPscanCont.EPdata(theColor).events{1}(theEvent).value,'boundary')
+                boundaryColor='red';
+            else
+                boundaryColor='black';
+            end
+            if strcmp(EPscanCont.dataType,'VLT') || (strcmp(EPscanCont.dataType,'TFT') && (EPscanCont.freqShow ~= length(EPscanCont.freqList)))
+                EPscanCont.handles.eventLines(iEvent)=line([EPscanCont.EPdata(theColor).events{1}(theEvent).sample-EPscanCont.displayPoints(1)+1 EPscanCont.EPdata(theColor).events{1}(theEvent).sample-EPscanCont.displayPoints(1)+1],[EPscanCont.displayLength -length(EPscanCont.displayChans)*EPscanCont.spacing],'Color',boundaryColor,'LineWidth',1);
+            else
+                EPscanCont.handles.eventLines(iEvent)=line([EPscanCont.EPdata(theColor).events{1}(theEvent).sample-EPscanCont.displayPoints(1)+1 EPscanCont.EPdata(theColor).events{1}(theEvent).sample-EPscanCont.displayPoints(1)+1],[1 EPscanCont.spacing*length(EPscanCont.displayChans)],'Color',boundaryColor,'LineWidth',1);
+            end
+        end
+    end
+end
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function editMode(src,eventdata)
+%toggles the red edit markings on and off
+global EPscanCont
+
+EPscanCont.editMode=get(EPscanCont.handles.editMode,'Value');
+theColor=EPscanCont.currentColor;
+
+if ~EPscanCont.editMode
+    if isfield(EPscanCont.handles,'trialBadChans')
+        for iChan=1:size(EPscanCont.handles.trialBadChans{theColor},1)
+            for iEpoch=1:size(EPscanCont.handles.trialBadChans{theColor},2)
+                if isgraphics(EPscanCont.handles.trialBadChans{theColor}(iChan,iEpoch))
+                    delete(EPscanCont.handles.trialBadChans{theColor}(iChan,iEpoch));
+                end
+            end
+        end
+    end
+    EPscanCont.handles.trialBadChans{theColor}=[];
+    if isfield(EPscanCont.handles,'badTrials')
+        for iEpoch=1:length(EPscanCont.handles.badTrials{theColor})
+            if isgraphics(EPscanCont.handles.badTrials{theColor}(iEpoch))
+                delete(EPscanCont.handles.badTrials{theColor}(iEpoch));
+            end
+        end
+    end
+    EPscanCont.handles.badTrials{theColor}=[];
+else
+    badDataMarking
+end
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function globalBadChans(src,eventdata,theChan)
+%toggles the global bad status of a channel
+global EPscanCont
+
+theColor=EPscanCont.currentColor;
+if ~EPscanCont.editMode
+    set(EPscanCont.handles.chanNames(find(EPscanCont.displayChans==theChan)),'Value',0);
+    drawnow
+    return;
+else
+    EPscanCont.globalBadChans{theColor}(theChan)=get(EPscanCont.handles.chanNames(find(EPscanCont.displayChans==theChan)),'Value');
+
+    if ~EPscanCont.globalBadChans{theColor}(theChan)
+        EPscanCont.globalBadChans{theColor}(theChan)=0;
+        EPscanCont.lineStyles{theChan}='-';
+        %delete(EPscanCont.handles.globalBadChans(theChan));
+    else
+        EPscanCont.globalBadChans{theColor}(theChan)=1;
+        EPscanCont.lineStyles{theChan}=':';
+        axes(EPscanCont.handles.graphPlot);
+        %     EPscanCont.handles.globalBadChans(theChan)=patch([1 1 EPscanCont.displayLength EPscanCont.displayLength],[-EPscanCont.spacing*(theChan-.25) -EPscanCont.spacing*(theChan-1.25) -EPscanCont.spacing*(theChan-1.25) -EPscanCont.spacing*(theChan-.25)],'red','EdgeColor','red');
+        %     alpha(EPscanCont.handles.globalBadChans(theChan),.5);
+    end
+
+    EPscanCont.edited(theColor)=1;
+
+    updateDisplay(0,0)
+end
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function updateFreqGraph
+%update the contents of the spectral domain graph plots
+
+global EPscanCont EPmain EPdataset
+
+theColor=EPscanCont.currentColor;
+
+if ~isempty(EPscanCont.plotPoint)
+    theEpoch=ceil((EPscanCont.displayPoints(EPscanCont.plotPoint))/EPscanCont.EPdata(theColor).Fs);
+    if (theEpoch ~= EPscanCont.plotLineEpoch) || (theEpoch==(size(EPscanCont.trialBadChans{theColor},2)))
+        if (theEpoch==(size(EPscanCont.trialBadChans{theColor},2)+1)) && rem(EPscanCont.numPoints,EPscanCont.EPdata(theColor).Fs)
+            EPscanCont.freqData=ones(length(EPscanCont.displayChans),length(EPscanCont.freqBins),4);
+            for iChan=1:length(EPscanCont.displayChans)
+                EPscanCont.freqData(iChan,:,:)=EPscanCont.freqData(iChan,:,:)-EPscanCont.spacing*(iChan-1);
+            end
+        else
+            EPscanCont.plotLineEpoch=theEpoch;
+            cfg=[];
+            cfg.method='mtmfft';
+            cfg.output='pow';
+            cfg.taper='hanning';
+            deltaT=1; %time window in seconds
+            deltaF=1/deltaT; %frequency resolution
+            cfg.foi=[deltaF:deltaF:EPscanCont.EPdata(theColor).Fs/2];
+            cfg.pad='maxperlen';
+            cfg.feedback='no';
+            cfg.channel=EPscanCont.chanNames(EPscanCont.displayChans);
+            numPoints=EPscanCont.EPdata(theColor).Fs;
+            numChans=size(EPscanCont.currentData,1);
+
+            FTdata.hdr.Fs=EPscanCont.EPdata(theColor).Fs;
+            FTdata.hdr.nChans=numChans;
+            FTdata.hdr.label=EPscanCont.chanNames(EPscanCont.displayChans);
+            FTdata.hdr.nTrials=1;
+            FTdata.hdr.nSamplesPre=EPscanCont.EPdata(theColor).baseline/(1000/EPscanCont.EPdata(theColor).Fs);
+            FTdata.hdr.nSamples=numPoints;
+            FTdata.label=EPscanCont.chanNames(EPscanCont.displayChans);
+            FTdata.time=cell(1,1);
+            FTdata.trial=cell(1,1);
+            FTdata.sampleinfo=zeros(1,2);
+            %FTdata.time{1,1}=([1:EPscanCont.sampleSize:1000]')/1000; %time in seconds
+            FTdata.time{1,1}=[1:numPoints]/FTdata.hdr.Fs; %time in seconds
+
+            FTdata.sampleinfo(1,1)=((1-1)*numPoints)+1;
+            FTdata.sampleinfo(1,2)=1*numPoints;
+            FTdata.dimord='{rpt}_chan_time';
+            FTdata.fsample=EPscanCont.EPdata(theColor).Fs;
+
+            EPscanCont.freqData=zeros(length(EPscanCont.displayChans),length(EPscanCont.freqBins),4);
+            for iColor=1:EPscanCont.numColors
+                if EPmain.view.dataset(iColor) <= length(EPdataset.dataset)
+                    if strcmp(EPscanCont.dataType,'VLT')
+                        FTdata.trial{1,1}=zeros(numChans,numPoints);
+                        FTdata.trial{1,1}(find(ismember(EPscanCont.displayChans,EPscanCont.chanIndex{iColor})),:)=EPscanCont.EPdata(iColor).data(find(ismember(EPscanCont.chanIndex{iColor},EPscanCont.displayChans)),((theEpoch-1)*EPscanCont.EPdata(theColor).Fs)+1:theEpoch*EPscanCont.EPdata(theColor).Fs);
+                        evalc('[freq] = ft_freqanalysis(cfg, FTdata);'); %pow spectrum
+                        EPscanCont.freqData(:,:,iColor)= log10(freq.powspctrm(:,EPscanCont.freqBins))*10; %dB scale
+                    else
+                        FTdata.hdr.nChans=1;
+                        for iChan=1:length(EPscanCont.displayChans)
+                            theChan=EPscanCont.displayChans(iChan);
+                            FTdata.hdr.label=EPscanCont.chanNames(theChan);
+                            FTdata.label=EPscanCont.chanNames(theChan);
+                            cfg.channel=EPscanCont.chanNames(theChan);
+                            if any(strcmp(EPscanCont.chanNames(theChan),{'Hsaccade','Vsaccade','blink','SacPot'}))
+                                freqChan=zeros(length(EPscanCont.freqBins),1);
+                            else
+                                freqChan=squeeze(abs(EPscanCont.EPdata(iColor).data(find(EPscanCont.chanIndex{iColor}==theChan),((theEpoch-1)*EPscanCont.EPdata(theColor).Fs)+1:theEpoch*EPscanCont.EPdata(theColor).Fs,:,:,:,EPscanCont.freqBins))); %convert complex number to real number
+                                freqChan=freqChan/mean(diff(EPscanCont.EPdata(theColor).freqNames)); %convert to spectral density
+                                freqChan=freqChan.^2; %convert amplitude to power
+                                freqChan=log10(abs(freqChan))*10; %convert to dB log scaling
+                                freqChan(isinf(freqChan))=-flintmax;%log10 of zero is -inf.  Replace with maximum possible double-precision negative number.
+                                freqChan=mean(freqChan);
+                            end
+                            EPscanCont.freqData(iChan,:,iColor)= freqChan;
+                        end
+                    end
+                    for iChan=1:length(EPscanCont.displayChans)
+                        EPscanCont.freqData(iChan,:,iColor)=EPscanCont.freqData(iChan,:,iColor)-EPscanCont.spacing*(iChan-1);
+                    end
+                end
+            end
+        end
+        axes(EPscanCont.handles.freqPlot);
+        cla(EPscanCont.handles.freqPlot);
+        for iColor=1:EPscanCont.numColors
+            if EPmain.view.dataset(iColor) <= length(EPdataset.dataset)
+                hold on
+                EPscanCont.handles.freqChans{iColor}=plot(EPscanCont.freqBins,squeeze(EPscanCont.freqData(:,:,iColor))','color',EPmain.preferences.view.color(iColor).RGB);
+                hold off
+            end
+        end
+        for iLine=1:length(EPscanCont.freqLines)
+            EPscanCont.handles.freqLines(iLine)=line([EPscanCont.freqLines(iLine) EPscanCont.freqLines(iLine)],[-length(EPscanCont.displayChans)*EPscanCont.spacing EPscanCont.spacing],'Color','black','LineWidth',1);
+        end
+        axis([1 length(EPscanCont.freqBins) -length(EPscanCont.displayChans)*EPscanCont.spacing EPscanCont.spacing])
+    end
+else
+    cla(EPscanCont.handles.freqPlot);
+end
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function changeEvent(src,eventdata)
+%change redisplay event controls.
+
+global EPscanCont
+
+EPscanCont.firstEvent=get(EPscanCont.handles.firstEvent,'Value');
+EPscanCont.lastEvent=get(EPscanCont.handles.lastEvent,'Value');
+
+if EPscanCont.lastEvent <= EPscanCont.firstEvent
+    set(EPscanCont.handles.redisplay,'enable','off');
+else
+    set(EPscanCont.handles.redisplay,'enable','on');
+end
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function redisplay(src,eventdata)
+%change display to show the period between the two chosen events.
+
+global EPscanCont
+
+if EPscanCont.lastEvent <= EPscanCont.firstEvent
+    return
+end
+
+theColor=EPscanCont.currentColor;
+
+oldDisplayPoints=EPscanCont.displayPoints;
+theFirstEvent=EPscanCont.alphabetEventOrder{theColor}(EPscanCont.firstEvent);
+theLastEvent=EPscanCont.alphabetEventOrder{theColor}(EPscanCont.lastEvent);
+EPscanCont.displayPoints=[EPscanCont.EPdata(theColor).events{1}(theFirstEvent).sample:EPscanCont.EPdata(theColor).events{1}(theLastEvent).sample];
+EPscanCont.displayLength=length(EPscanCont.displayPoints);
+if ismember(oldDisplayPoints(EPscanCont.plotPoint),EPscanCont.displayPoints)
+    EPscanCont.plotPoint=find(oldDisplayPoints(EPscanCont.plotPoint)==EPscanCont.displayPoints);
+else
+    EPscanCont.plotPoint=[];
+end
+
+set(EPscanCont.handles.xSlider,'SliderStep',[EPscanCont.displayLength/EPscanCont.numPoints max(0.2,length(EPscanCont.displayLength)/EPscanCont.numPoints)]);
+EPscanCont.xGraphPos=(EPscanCont.displayPoints(1)-1)/EPscanCont.numPoints;
+set(EPscanCont.handles.xSlider,'Value',EPscanCont.xGraphPos);
+
+updateDisplay(1,0);
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function changeCurrentEvent(src,eventdata)
+%change current event based on menu.
+
+global EPscanCont
+
+theColor=EPscanCont.currentColor;
+
+EPscanCont.currentEvent=get(EPscanCont.handles.currentEvent,'Value');
+theCurrentEvent=EPscanCont.sampleEventOrder{theColor}(EPscanCont.currentEvent);
+EPscanCont.currentkey=length(EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).keys);
+
+if ~ismember(round(EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).sample),EPscanCont.displayPoints)
+    EPscanCont.plotPoint=[];
+else
+    EPscanCont.plotPoint=find(round(EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).sample) == EPscanCont.displayPoints);
+end
+
+updateDisplay(0,0);
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function recenter(src,eventdata)
+%change display to center on the current event.
+
+global EPscanCont
+
+theColor=EPscanCont.currentColor;
+
+theCurrentEvent=EPscanCont.sampleEventOrder{theColor}(EPscanCont.currentEvent);
+EPscanCont.displayPoints=[round(EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).sample)-ceil(EPscanCont.displayLength/2)+1:round(EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).sample)+ceil(EPscanCont.displayLength/2)];
+if EPscanCont.displayPoints(1) < 1
+    EPscanCont.displayPoints=EPscanCont.displayPoints-EPscanCont.displayPoints(1)+1;
+end
+if EPscanCont.displayPoints(end) > EPscanCont.numPoints
+    EPscanCont.displayPoints=EPscanCont.displayPoints-(EPscanCont.displayPoints(end)-EPscanCont.numPoints);
+end
+EPscanCont.displayLength=length(EPscanCont.displayPoints);
+EPscanCont.plotPoint=find(round(EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).sample)==EPscanCont.displayPoints);
+
+set(EPscanCont.handles.xSlider,'SliderStep',[EPscanCont.displayLength/EPscanCont.numPoints max(0.2,length(EPscanCont.displayLength)/EPscanCont.numPoints)]);
+EPscanCont.xGraphPos=(EPscanCont.displayPoints(1)-1)/EPscanCont.numPoints;
+set(EPscanCont.handles.xSlider,'Value',EPscanCont.xGraphPos);
+
+updateDisplay(1,0);
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function changeFreq(src,eventdata)
+%change frquency displayed for TFT data.
+
+global EPscanCont
+
+EPscanCont.freqShow=get(EPscanCont.handles.freqList,'Value');
+
+if EPscanCont.freqShow == length(EPscanCont.freqList)
+    EPscanCont.freqPos=1;
+    EPscanCont.spacing=EPscanCont.lastBins-EPscanCont.startBins+1;
+    if EPscanCont.FFTunits==1
+        EPscanCont.spacing=EPscanCont.spacing*2; %complex numbers
+    end
+else
+    EPscanCont.freqPos=EPscanCont.freqShow;
+    EPscanCont.spacing=100;
+end
+
+updateDisplay(1,0);
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function changeChan(src,eventdata)
+%change channel used to color the eye position plots
+
+global EPscanCont
+
+EPscanCont.chanShow=get(EPscanCont.handles.ETchanList,'Value');
+
+drawPlots(EPscanCont.handles.topos.topo,EPscanCont.plotPoint);
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function changeEyeSettings(src,eventdata)
+%change the settings for the eye position plots
+
+global EPscanCont
+
+theColor=EPscanCont.currentColor;
+
+if ~all(cell2mat(cellfun(@isempty,EPscanCont.EYEsize,'UniformOutput',false))) && ~all(cell2mat(cellfun(@isnan,EPscanCont.EYEsize,'UniformOutput',false)))
+    theVar=str2num(get(EPscanCont.handles.topos.eyeCenterX,'String'));
+    if ~isempty(theVar)
+        EPscanCont.eyeCenterX{theColor}=theVar;
+    end
+
+    theVar=str2num(get(EPscanCont.handles.topos.eyeCenterY,'String'));
+    if ~isempty(theVar)
+        EPscanCont.eyeCenterY{theColor}=theVar;
+    end
+
+    theVar=str2num(get(EPscanCont.handles.topos.eyeScaleX,'String'));
+    if ~isempty(theVar)
+        EPscanCont.eyeScaleX{theColor}=theVar; %minus means flip
+    end
+
+    theVar=str2num(get(EPscanCont.handles.topos.eyeScaleY,'String'));
+    if ~isempty(theVar)
+        EPscanCont.eyeScaleY{theColor}=theVar; %minus means flip
+    end
+end
+
+if ~all(cell2mat(cellfun(@isempty,EPscanCont.SACCsize,'UniformOutput',false))) && ~all(cell2mat(cellfun(@isnan,EPscanCont.SACCsize,'UniformOutput',false)))
+    theVar=str2num(get(EPscanCont.handles.topos.sacCenterX,'String'));
+    if ~isempty(theVar)
+        EPscanCont.sacCenterX{theColor}=theVar;
+    end
+
+    theVar=str2num(get(EPscanCont.handles.topos.sacCenterY,'String'));
+    if ~isempty(theVar)
+        EPscanCont.sacCenterY{theColor}=theVar;
+    end
+
+    theVar=str2num(get(EPscanCont.handles.topos.sacScaleX,'String'));
+    if ~isempty(theVar) && (theVar > 0)
+        EPscanCont.sacScaleX{theColor}=theVar;
+    end
+
+    theVar=str2num(get(EPscanCont.handles.topos.sacScaleY,'String'));
+    if ~isempty(theVar) && (theVar > 0)
+        EPscanCont.sacScaleY{theColor}=theVar;
+    end
+end
+
+EPscanCont.edited(theColor)=1;
+
+drawPlots(EPscanCont.handles.topos.topo,EPscanCont.plotPoint);
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function editEvent(src,eventdata)
+%edit the information of the current event
+
+global EPscanCont
+
+theColor=EPscanCont.currentColor;
+EPscanCont.edited(theColor)=1;
+changedEventFlag=0; %need to update events list
+changedKeyFlag=0;  %need to update stims list
+if ~isempty(EPscanCont.currentEvent)
+    theCurrentEvent=EPscanCont.sampleEventOrder{theColor}(EPscanCont.currentEvent);
+end
+switch src
+    case EPscanCont.handles.addEvent
+        EPscanCont.EPdata(theColor).events{1}(end+1)=struct('type',' ','sample',EPscanCont.displayPoints(EPscanCont.plotPoint),'value',' ','duration',' ','keys',struct('code','','data','','datatype','','description',''));
+        EPscanCont.currentEvent=find(EPscanCont.sampleEventOrder{theColor}==length(EPscanCont.sampleEventOrder{theColor}));
+        theCurrentEvent=length(EPscanCont.sampleEventOrder{theColor});
+        EPscanCont.currentkey=1;
+        changedEventFlag=1;
+    case EPscanCont.handles.minusEvent
+        keyData=EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).keys;
+        for iKey=1:length(keyData)
+            if strcmp(keyData(iKey).code,'stim')
+                changedKeyFlag=1;
+            end
+        end
+        EPscanCont.EPdata(theColor).events{1}(theCurrentEvent)=[];
+        changedEventFlag=1;
+    case EPscanCont.handles.eventType
+        EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).type=get(EPscanCont.handles.eventType,'String');
+    case EPscanCont.handles.eventValue
+        EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).value=get(EPscanCont.handles.eventValue,'String');
+    case EPscanCont.handles.eventSample
+        EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).sample=get(EPscanCont.handles.eventSample,'String');
+    case EPscanCont.handles.eventDuration
+        EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).duration=get(EPscanCont.handles.eventDuration,'String');
+    case EPscanCont.handles.eventKeys
+        EPscanCont.currentkey=get(EPscanCont.handles.eventKeys,'Value');
+    case EPscanCont.handles.addKey
+        EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).keys(end+1)=struct('code','','data','','datatype','','description','');
+        EPscanCont.currentkey=EPscanCont.currentkey+1;
+        EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).keys(EPscanCont.currentkey).datatype='char';
+    case EPscanCont.handles.minusKey
+        EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).keys(EPscanCont.currentkey)=[];
+        if isempty(EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).keys)
+            EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).keys(1)=struct('code','','data','','datatype','','description','');
+        elseif EPscanCont.currentkey > length(EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).keys)
+            EPscanCont.currentkey=EPscanCont.currentkey-1;
+        end
+        changedKeyFlag=1;
+    case EPscanCont.handles.keyCode
+        oldKey=EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).keys(EPscanCont.currentkey).code;
+        newKey=get(EPscanCont.handles.keyCode,'String');
+        if strcmp(oldKey,'stim') || strcmp(newKey,'stim')
+            changedKeyFlag=1;
+        end
+        EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).keys(EPscanCont.currentkey).code=newKey;
+    case EPscanCont.handles.keyData
+        EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).keys(EPscanCont.currentkey).data=get(EPscanCont.handles.keyData,'String');
+        if strcmp(EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).keys(EPscanCont.currentkey).code,'stim')
+            changedKeyFlag=1;
+        end
+    case EPscanCont.handles.keyType
+        EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).keys(EPscanCont.currentkey).datatype=get(EPscanCont.handles.keyType,'String');
+    case EPscanCont.handles.keyDescrip
+        EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).keys(EPscanCont.currentkey).description=get(EPscanCont.handles.keyDescrip,'String');
+end
+
+if changedEventFlag
+
+    set(EPscanCont.handles.addEvent,'enable','off');
+    set(EPscanCont.handles.minusEvent,'enable','off');
+    set(EPscanCont.handles.eventType,'enable','off');
+    set(EPscanCont.handles.eventValue,'enable','off');
+    set(EPscanCont.handles.eventSample,'enable','off');
+    set(EPscanCont.handles.eventDuration,'enable','off');
+    set(EPscanCont.handles.eventKeys,'enable','off');
+    set(EPscanCont.handles.addKey,'enable','off');
+    set(EPscanCont.handles.minusKey,'enable','off');
+    set(EPscanCont.handles.keyCode,'enable','off');
+    set(EPscanCont.handles.keyData,'enable','off');
+    set(EPscanCont.handles.keyType,'enable','off');
+    set(EPscanCont.handles.keyDescrip,'enable','off');
+    drawnow
+
+    sampleList=zeros(length(EPscanCont.EPdata(theColor).events{1}),1);
+    EPscanCont.eventList{theColor}=cell(length(EPscanCont.EPdata(theColor).events{1}),1);
+    for iEvent=1:length(EPscanCont.EPdata(theColor).events{1})
+        theEventValue=EPscanCont.EPdata(theColor).events{1}(iEvent).value;
+        theEventSample=EPscanCont.EPdata(theColor).events{1}(iEvent).sample;
+        sampleList(iEvent,1)=theEventSample;
+        if ~isempty(theEventValue)
+            eventNum=sprintf('%04d',(length(find([EPscanCont.EPdata(theColor).events{1}(strcmp(theEventValue,{EPscanCont.EPdata(theColor).events{1}.value})).sample]<=theEventSample))));
+            EPscanCont.eventList{theColor}{iEvent}=[theEventValue '(' eventNum ')' keyStim];
+        else
+            theEventType=EPscanCont.EPdata(theColor).events{1}(iEvent).type;
+            if ~isempty(theEventType)
+                eventNum=sprintf('%04d',(length(find([EPscanCont.EPdata(theColor).events{1}(strcmp(theEventType,{EPscanCont.EPdata(theColor).events{1}.value})).sample]<=theEventSample))));
+                EPscanCont.eventList{theColor}{iEvent}=[theEventType '(' eventNum ')' keyStim];
+            else
+                EPscanCont.eventList{theColor}{iEvent}='null_event';
+            end
+        end
+    end
+
+    [B EPscanCont.alphabetEventOrder{theColor}]=sort(EPscanCont.eventList{theColor});
+    [B EPscanCont.sampleEventOrder{theColor}]=sort(sampleList);
+    if isempty(EPscanCont.eventList{theColor})
+        EPscanCont.starredSampleEventList{theColor}='none';
+        EPscanCont.starredEventList{theColor}='none';
+    else
+        EPscanCont.starredEventList{theColor}=cell(length(EPscanCont.eventList{theColor}),1);
+        EPscanCont.starredSampleEventList{theColor}=cell(length(EPscanCont.eventList{theColor}),1);
+        for iEvent=1:length(EPscanCont.eventList{theColor})
+            if ismember(round(EPscanCont.EPdata(theColor).events{1}(iEvent).sample),EPscanCont.displayPoints)
+                EPscanCont.starredEventList{theColor}{find(iEvent==EPscanCont.alphabetEventOrder{theColor})}=['*' EPscanCont.eventList{theColor}{iEvent}];
+                sampleOrderNumber=find(iEvent==EPscanCont.sampleEventOrder{theColor});
+                EPscanCont.starredSampleEventList{theColor}{sampleOrderNumber}=['*' EPscanCont.eventList{theColor}{iEvent}];
+            else
+                EPscanCont.starredEventList{theColor}{find(iEvent==EPscanCont.alphabetEventOrder{theColor})}=EPscanCont.eventList{theColor}{iEvent};
+                EPscanCont.starredSampleEventList{theColor}{find(iEvent==EPscanCont.sampleEventOrder{theColor})}=EPscanCont.eventList{theColor}{iEvent};
+            end
+        end
+    end
+    set(EPscanCont.handles.firstEvent,'String',EPscanCont.starredEventList{theColor});
+    set(EPscanCont.handles.lastEvent,'String',EPscanCont.starredEventList{theColor});
+    set(EPscanCont.handles.currentEvent,'String',EPscanCont.starredSampleEventList{theColor});
+
+end
+
+if changedKeyFlag
+    for iEvent=1:length(EPscanCont.EPdata(theColor).events{1})
+        keyData=EPscanCont.EPdata(theColor).events{1}(iEvent).keys;
+        keyStim=[];
+        for iKey=1:length(keyData)
+            if strcmp(keyData(iKey).code,'stim')
+                keyStim=keyData(iKey).data;
+                if any(strcmp(keyStim,{EPscanCont.EPdata(theColor).stims.name}))
+                    EPscanCont.stimList{iColor}(end+1).sample=EPscanCont.EPdata(theColor).events{1}(iEvent).sample;
+                    EPscanCont.stimList{iColor}(end).stim=find(strcmp(keyStim,{EPscanCont.EPdata(theColor).stims.name}));
+                end
+            end
+        end
+    end
+end
+
+if ~isempty(EPscanCont.currentEvent)
+    set(EPscanCont.handles.eventType,'String',EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).type);
+    set(EPscanCont.handles.eventValue,'String',EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).value);
+    set(EPscanCont.handles.eventSample,'String',EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).sample);
+    set(EPscanCont.handles.eventDuration,'String',EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).duration);
+
+    theString=cell(length(EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).keys),1);
+    for iKey=1:length(EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).keys)
+        theString{iKey}=num2str(iKey);
+    end
+    set(EPscanCont.handles.eventKeys,'String',theString);
+    set(EPscanCont.handles.eventKeys,'Value',EPscanCont.currentkey);
+
+    set(EPscanCont.handles.keyCode,'String',EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).keys(EPscanCont.currentkey).code);
+    set(EPscanCont.handles.keyData,'String',EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).keys(EPscanCont.currentkey).data);
+    set(EPscanCont.handles.keyType,'String',EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).keys(EPscanCont.currentkey).datatype);
+    set(EPscanCont.handles.keyDescrip,'String',EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).keys(EPscanCont.currentkey).description);
+end
+if changedEventFlag
+    updateDisplay(1,0);
+    set(EPscanCont.handles.addEvent,'enable','on');
+    set(EPscanCont.handles.minusEvent,'enable','on');
+    set(EPscanCont.handles.eventType,'enable','on');
+    set(EPscanCont.handles.eventValue,'enable','on');
+    set(EPscanCont.handles.eventSample,'enable','on');
+    set(EPscanCont.handles.eventDuration,'enable','on');
+    set(EPscanCont.handles.eventKeys,'enable','on');
+    set(EPscanCont.handles.addKey,'enable','on');
+    set(EPscanCont.handles.minusKey,'enable','on');
+    set(EPscanCont.handles.keyCode,'enable','on');
+    set(EPscanCont.handles.keyData,'enable','on');
+    set(EPscanCont.handles.keyType,'enable','on');
+    set(EPscanCont.handles.keyDescrip,'enable','on');
+end
+drawnow
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function shiftEvent(src,eventdata)
+%shift the current event left or right
+
+global EPscanCont
+
+theColor=EPscanCont.currentColor;
+eventSamples=round([EPscanCont.EPdata(theColor).events{1}(EPscanCont.sampleEventOrder{theColor}).sample]');
+
+if (src == EPscanCont.handles.backEvent) && (EPscanCont.currentEvent > 1)
+    EPscanCont.currentEvent=max(find(eventSamples<EPscanCont.displayPoints(EPscanCont.plotPoint)));
+elseif (src == EPscanCont.handles.nextEvent) && (EPscanCont.currentEvent < length(EPscanCont.eventList{theColor}))
+    EPscanCont.currentEvent=min(find(eventSamples>EPscanCont.displayPoints(EPscanCont.plotPoint)));
+end
+
+set(EPscanCont.handles.currentEvent,'Value',EPscanCont.currentEvent);
+
+theCurrentEvent=EPscanCont.sampleEventOrder{theColor}(EPscanCont.currentEvent);
+EPscanCont.currentkey=length(EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).keys);
+
+if ~ismember(round(EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).sample),EPscanCont.displayPoints)
+    EPscanCont.plotPoint=[];
+else
+    EPscanCont.plotPoint=find(round(EPscanCont.EPdata(theColor).events{1}(theCurrentEvent).sample) == EPscanCont.displayPoints);
+end
+
+updateDisplay(0,0);
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function e1e2(src,eventdata)
+%change e1 menu or e2 menu to the current event
+
+global EPscanCont
+
+if (src == EPscanCont.handles.e1)
+    set(EPscanCont.handles.firstEvent,'Value',find(EPscanCont.alphabetEventOrder{theColor} == EPscanCont.sampleEventOrder{theColor}(EPscanCont.currentEvent)));
+elseif (src == EPscanCont.handles.e2)
+    set(EPscanCont.handles.lastEvent,'Value',find(EPscanCont.alphabetEventOrder{theColor} == EPscanCont.sampleEventOrder{theColor}(EPscanCont.currentEvent)));
+end
+
+changeEvent
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function badDataMarking
+%add bad data markings
+
+global EPscanCont
+
+theColor=EPscanCont.currentColor;
+axes(EPscanCont.handles.graphPlot);
+for iChan=1:length(EPscanCont.displayChans)
+    theChan=EPscanCont.displayChans(iChan);
+    if any(EPscanCont.trialBadChans{theColor}(find(EPscanCont.chanIndex{theColor}==theChan),:)==-1)
+        for iEpoch=floor((EPscanCont.displayPoints(1)-1)/EPscanCont.EPdata(theColor).Fs)+1:floor((EPscanCont.displayPoints(end)-1)/EPscanCont.EPdata(theColor).Fs)+1
+            graphEpoch=iEpoch-(floor((EPscanCont.displayPoints(1)-1)/EPscanCont.EPdata(theColor).Fs)+1)+1;
+            excessEpoch=0;
+            theEpoch=iEpoch;
+            if iEpoch>size(EPscanCont.trialBadChans{theColor},2)
+                continue
+            elseif (iEpoch==size(EPscanCont.trialBadChans{theColor},2)) && rem(EPscanCont.numPoints,EPscanCont.EPdata(theColor).Fs)
+                excessEpoch=1; %extra time points tacked onto last epoch
+            end
+            if EPscanCont.trialBadChans{theColor}(theChan,theEpoch)==-1
+                if excessEpoch
+                    startEpoch=((graphEpoch-1)*EPscanCont.EPdata(theColor).Fs)+1-rem(EPscanCont.displayPoints(1)-1,EPscanCont.EPdata(theColor).Fs);
+                    endEpoch=EPscanCont.displayLength;
+                else
+                    startEpoch=((graphEpoch-1)*EPscanCont.EPdata(theColor).Fs)+1-rem(EPscanCont.displayPoints(1)-1,EPscanCont.EPdata(theColor).Fs);
+                    endEpoch=graphEpoch*EPscanCont.EPdata(theColor).Fs-rem(EPscanCont.displayPoints(1)-1,EPscanCont.EPdata(theColor).Fs);
+                end
+                EPscanCont.handles.trialBadChans{theColor}(theChan,theEpoch)=patch([startEpoch startEpoch endEpoch endEpoch],...
+                    [-EPscanCont.spacing*(iChan-.25) -EPscanCont.spacing*(iChan-1.25) -EPscanCont.spacing*(iChan-1.25) -EPscanCont.spacing*(iChan-.25)],'red','EdgeColor','red');
+                alpha(EPscanCont.handles.trialBadChans{theColor}(theChan,theEpoch),.5);
+            end
+        end
+    end
+end
+for iEpoch=floor((EPscanCont.displayPoints(1)-1)/EPscanCont.EPdata(theColor).Fs)+1:floor((EPscanCont.displayPoints(end)-1)/EPscanCont.EPdata(theColor).Fs)+1
+    graphEpoch=iEpoch-(floor((EPscanCont.displayPoints(1)-1)/EPscanCont.EPdata(theColor).Fs)+1)+1;
+    theEpoch=iEpoch;
+    excessEpoch=0;
+    if iEpoch>length(EPscanCont.badTrials{theColor})
+        continue
+    elseif (iEpoch==size(EPscanCont.trialBadChans{theColor},2)) && rem(EPscanCont.numPoints,EPscanCont.EPdata(theColor).Fs)
+        excessEpoch=1; %extra time points tacked onto last epoch
+    end
+    if EPscanCont.badTrials{theColor}(theEpoch)
+        if excessEpoch
+            startEpoch=((graphEpoch-1)*EPscanCont.EPdata(theColor).Fs)+1-rem(EPscanCont.displayPoints(1)-1,EPscanCont.EPdata(theColor).Fs);
+            endEpoch=EPscanCont.displayLength;
+        else
+            startEpoch=((graphEpoch-1)*EPscanCont.EPdata(theColor).Fs)+1-rem(EPscanCont.displayPoints(1)-1,EPscanCont.EPdata(theColor).Fs);
+            endEpoch=graphEpoch*EPscanCont.EPdata(theColor).Fs-rem(EPscanCont.displayPoints(1)-1,EPscanCont.EPdata(theColor).Fs);
+        end
+        EPscanCont.handles.badTrials{theColor}(theEpoch)=patch([startEpoch startEpoch endEpoch endEpoch],...
+            [-EPscanCont.spacing*length(EPscanCont.displayChans) EPscanCont.spacing*length(EPscanCont.displayChans) EPscanCont.spacing*length(EPscanCont.displayChans) -EPscanCont.spacing*length(EPscanCont.displayChans)],'red','EdgeColor','red');
+        alpha(EPscanCont.handles.badTrials{theColor}(theEpoch),.5);
+    end
+end
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function editETlatency(src,eventdata)
+%change latency of ERP tracker plots.
+
+global EPscanCont
+
+theColor=EPscanCont.currentColor;
+latencyNum=str2double(get(EPscanCont.handles.ETlatency,'String'));
+
+if ~isnumeric(latencyNum)
+    disp('Not a number.')
+    set(EPscanCont.handles.ETlatency,'String','');
+    return
+end
+
+EPscanCont.ETlatency=round(latencyNum/(1000/EPscanCont.EPdata(theColor).Fs));
+
+drawPlots(EPscanCont.handles.topos.topo,EPscanCont.plotPoint);
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function changePlots(src,eventdata,thePlot)
+%change the plot being displayed.
+
+global EPscanCont
+
+EPscanCont.topos.topoValue(thePlot)=get(EPscanCont.handles.topos.menu(thePlot),'Value');
+
+drawPlots(EPscanCont.handles.topos.topo,EPscanCont.plotPoint);
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%Confirms closing of the Scan pane.
+function confirmCloseScan(src,event)
+
+global EPscanCont
+
+if ~EPscanCont.done && any(EPscanCont.edited)
+    selection = questdlg('Close The Scan Window Without Saving Changes?', ...
+        'Confirm Closure', ...
+        'Yes','No','Yes');
+    switch selection
+        case 'Yes'
+            cancelScan
+        case 'No'
+            return
+    end
+else
+    cancelScan
+end

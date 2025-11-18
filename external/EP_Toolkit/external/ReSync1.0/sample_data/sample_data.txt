@@ -1,0 +1,2 @@
+you can download the sample data from https://github.com/guangouyang/ReSync
+The file name of the data is 'vp26_clean'

@@ -1,0 +1,597 @@
+function ep_expandChan(src,eventdata,theFunction)
+% ep_expandChan - ep_expandChan -
+% Expands a channel into a full window for show waves function.
+%
+
+%History
+%  by Joseph Dien (11/22/13)
+%  jdien07@mac.com
+%
+% bugfix 1/12/14 JD
+% Workaround for Matlab bug periodically causing screen size to register as having zero size.
+%
+% modified 2/26/14 JD
+% Added View function option to plot or erpimage all trials and all subjects.
+%
+% modified 4/20/14 JD
+% Added coherence and phase-locking options, including support for complex numbers.
+%
+% modified 6/19/14 JD
+% Added support for sample-by-sample t-tests, including STS chanType.
+%
+% modified 5/25/14 JD
+% Set colormap to jet even for Matlab 2014b onwards.
+%
+% bugfix 6/12/17 JD
+% Fixed crash when displaying TFT data and not all four colors are being used.
+%
+% modified 6/18/17 JD
+% For TFT data, when set to display only one Hz bin, switches to waveform display rather than erpimage display.
+% Fixed single-sample duration sampleTest results not displaying in View Waves.
+% Now displays expanded channels for both Waves and Topos.
+%
+% modified 2/9/18 JD
+% Added support for GFP plots and error bands.
+%
+% bugfix & modified 2/23/18 JD
+% Fixed crash when expanding waveform in Topos.
+% Added -all- and -erpimage- options for cells and factors.
+%
+% bugfix & modified 4/27/18 JD
+% Fixed crash when expanding Topos figure of factors.
+% Added support for View Topos listing all trials or cells or subjects.
+%
+% modified 6/5/18 JD
+% Improved support for RT event marks.
+%
+% bugfix 11/9/18 JD
+% Fixed crash when plotting waveforms with the positive down option chosen in preferences.
+%
+% bugfix 12/1/18 JD
+% Fixed expanded waveform figures from View Topos showing wrong channel.
+% Added line indicating latency of topos to expanded waveform figures from View Topos.
+%
+% modified & bugfix 1/12/19 JD
+% Improved auto-scaling of minimum and maximum data.
+% Fixes to handling of coherence data.
+%
+% modified 8/20/19 JD
+% Added preferences for waveform figure linewidth and channel font size.
+%
+% bugfix 1/10/20 JD
+% Fixed waveforms not being displayed when chosen colors are non-consecutive (e.g., just blue and green).
+% Fixed crash when displaying data with ERPimages.
+%
+% modified 3/13/20 JD
+% Added support for viewing BOSC data.
+%
+% modified 4/22/20 JD
+% Added support for up to eight colors in waveform figures.
+%
+% modified 2/7/21 JD
+% Can omit channel label by setting label size preference setting to zero.
+%
+% bugfix 2/7/21 JD
+% Fixed not having separate preference settings for figure markings and the line widths settings were not having any effect.
+%
+% bugfix 3/3/21 JD
+% Fixed problems after using all eight colors to display factor results.
+%
+% bugfix 11/21/21 JD
+% Fixed crash after expanding View pane and using the expanded colors and then closing up the expansion and then expanding a channel waveform.
+%
+% modified 8/8/22 JD
+% Turning off the figure labels now also turns off the axis labels in the expanded channel figures.
+%
+% bugfix 11/16/23 JD
+% Fixed band data not matching up to data when a color is skipped.
+%
+% bugfix & modified 4/10/25 JD
+% Added lineStyle control for the waveform lines.
+% Added context-menu to add legend to expanded waveform figures.
+% Fixed crash when plotting sampTest results and colors are non-consecutive.
+% Fixed crash when colors are non-consecutive.
+% Fixed crash when sampleTest results are displayed in isolation without waveforms.
+% Fixed various things not restricting themselves to just the displayed colors.
+% Fixed sample test results rendered in red if just a single sample.
+% Fixed crash when displaying FFT data for View Topos and not in Factors mode.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%     Copyright (C) 1999-2025  Joseph Dien
+%
+%     This program is free software: you can redistribute it and/or modify
+%     it under the terms of the GNU General Public License as published by
+%     the Free Software Foundation, either version 3 of the License, or
+%     (at your option) any later version.
+%
+%     This program is distributed in the hope that it will be useful,
+%     but WITHOUT ANY WARRANTY; without even the implied warranty of
+%     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+%     GNU General Public License for more details.
+%
+%     You should have received a copy of the GNU General Public License
+%     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+global EPwaves EPtopos EPmain EPdataset
+
+if isempty(EPmain.view)
+    warndlg('When you leave the View pane, the data linked to waveform plots are no longer available.  You''ll need to generate a new waveform plot.');
+    return
+end
+
+scrsz = EPmain.scrsz;
+
+switch theFunction
+    case 'EPwaves'
+        functionData=EPwaves;
+    case 'EPtopos'
+        functionData=EPtopos;
+end
+
+if isfield(functionData.handles.waves,'hWave')
+    chan=find([functionData.handles.waves.hWave] == src);
+else
+    chan=[];
+end
+
+if isempty(chan)
+    for iChan=1:length(functionData.handles.waves.hLines)
+        for theLine=1:length(functionData.handles.waves.hLines{iChan})
+            if src == functionData.handles.waves.hLines{iChan}(theLine)
+                chan=iChan;
+            end
+        end
+    end
+end
+
+if isempty(chan)
+    disp('Could not find the channel for some reason.')
+    return
+end
+
+if strcmp('EPtopos',theFunction)
+    row=chan;
+    chan=EPtopos.chans(row);
+    if EPtopos.complexData
+        rowCounter=(EPtopos.page-1)*ceil(EPtopos.perPage/2)+ceil(row/2);
+    else
+        rowCounter=(EPtopos.page-1)*EPtopos.perPage+row;
+    end
+    if (EPtopos.numRows > 1) && strcmp(EPtopos.type,'factor')
+        theFac=rowCounter;
+    else
+        theFac=1;
+    end
+    if strcmp(EPtopos.type,'freq')
+        if EPtopos.complexData && rem(row,2)
+            theFreq=functionData.iFreqs(rowCounter);
+        else
+            theFreq=functionData.freqs(rowCounter);
+        end
+    end
+    if EPtopos.complexData && rem(row,2)
+        theData2=EPtopos.totalImagData(:,:,theFac,:,:,EPtopos.plotColors);
+    else
+        theData2=EPtopos.totalData(:,:,theFac,:,:,EPtopos.plotColors);
+    end
+    
+    if any(EPmain.view.rel(EPmain.view.dataset(1:EPmain.numColors) <= length(EPdataset.dataset)))
+        if strcmp(EPtopos.type,'freq')
+            if EPtopos.complexData && rem(iRow,2)
+                theFreq=EPtopos.freqs(rowCounter);
+            else
+                theFreq=EPtopos.iFreqs(rowCounter);
+            end
+            theData2=theData2(:,:,:,theFreq,:,find(EPmain.view.rel(EPtopos.plotColors)));
+        else
+            theData2(:,:,:,:,:,find(EPmain.view.rel(EPtopos.plotColors)))=abs(theData2(:,:,:,:,:,find(EPmain.view.rel(EPtopos.plotColors))));
+            theData3=zeros([size(theData2,1),size(theData2,2),size(theData2,3),size(theData2,4),1,size(theData2,6)]);
+            for iColor=1:length(EPtopos.plotColors)
+                theData3(:,:,:,:,:,iColor)=mean(theData2(:,:,:,:,EPtopos.goodRelChans{EPtopos.plotColors(iColor)},iColor),5); %collapse over relations if any
+            end
+            theData2=theData3;
+        end
+    end
+
+    for iCol=1:length(EPtopos.plotColors)
+        for iFreq=1:size(theData2,4)
+            theData(:,:,iCol,iFreq)=theData2(:,:,:,iFreq,:,iCol); %convert to EPwaves format
+        end
+    end
+    theChan=EPtopos.chans(rowCounter);
+else
+    theData=EPwaves.totalData;
+    theChan=chan;
+    rowCounter=1;
+end
+
+% if isfield(functionData.handles.waves,'hExpandedFigure')
+%     if ~isempty(functionData.handles.waves.hExpandedFigure)
+%         if ishandle(functionData.handles.waves.hExpandedFigure)
+%             close(functionData.handles.waves.hExpandedFigure)
+%             functionData.handles.waves.hExpandedFigure=[];
+%         end
+%     end
+% end
+
+switch theFunction
+    case 'EPwaves'
+        EPmain.expandChan.handles.hExpandedFigure = figure('Name', [functionData.chanNames{theChan}], 'NumberTitle', 'off', 'Position',[scrsz(1)+scrsz(3)/2 scrsz(2)+scrsz(4)/2 600 400]);
+    case 'EPtopos'
+        EPmain.expandChan.handles.hExpandedFigure = figure('Name', [functionData.chanNames{theChan}], 'NumberTitle', 'off', 'Position',[scrsz(1)+scrsz(3)/2 scrsz(2)+scrsz(4)/2 600 400]);
+end
+colormap jet;
+
+if strcmp('EPwaves',theFunction) && (functionData.BSCmode || any(functionData.BOSC.BOSCcolor))
+    plotForm='VLT';
+else
+    plotForm=EPmain.view.dataTransform;
+end
+
+if strcmp('TFT',EPmain.view.dataTransform) && (functionData.firstHz==functionData.lastHz)
+    plotForm='VLT';
+end
+if strcmp('TFT',EPmain.view.dataTransform) && (functionData.firstTime==functionData.lastTime)
+    plotForm='FFT';
+end
+
+if strcmp('FFT',plotForm)
+    sampleSize=0;
+    spacing=(functionData.lastHz-functionData.firstHz)/(functionData.numHz-1);
+else
+    sampleSize=functionData.sampleSize;
+    spacing=functionData.sampleSize;
+end
+
+waveList=find(~ismember(functionData.colorIndex,unique([find(ismember(EPmain.view.allTrials(1:EPmain.numColors),[2 4 6])) functionData.BOSC.BOSCcolor])));
+theMarker='none';
+theMarkerSize=EPmain.preferences.view.lineSize*2;
+plotDataList=find(EPmain.view.dataset(1:EPmain.numColors) <= length(EPdataset.dataset));
+
+switch plotForm
+    case 'VLT'
+        numImages=length(unique([find(ismember(EPmain.view.allTrials(1:EPmain.numColors),[2 4 6])) functionData.BOSC.BOSCcolor]));
+        if (length(functionData.plotColors)-numImages) > 0
+            imageSpace=4;
+        else
+            imageSpace=numImages;
+        end
+        EPmain.expandChan.handles.hExpandedAxes=[];
+        if numImages %if any erpimage
+            imageCount=0;
+            for iColor=1:EPmain.numColors
+                if (EPmain.view.dataset(iColor) <= length(EPdataset.dataset)) && (ismember(EPmain.view.allTrials(iColor),[2 4 6]) || ismember(iColor,functionData.BOSC.BOSCcolor))
+                    imageCount=imageCount+1;
+                    if ismember(EPmain.view.allTrials(iColor),[2 4 6])
+                        %all trials mode
+                        trialList=find(functionData.colorIndex==iColor);
+                        freqList=1;
+                        ySize=trialList;
+                    else
+                        %BOSC mode
+                        trialList=iColor;
+                        freqList=[1:size(functionData.totalData,4)];
+                        ySize=freqList;
+                    end
+                    EPmain.expandChan.handles.hExpandedAxes(end+1,1) = axes('position',[.05 .05+(.9/imageSpace)*(imageSpace-imageCount) .9 (.9/imageSpace)]);
+                    if ~(EPmain.preferences.view.labelSize > 0)
+                        set(EPmain.expandChan.handles.hExpandedAxes(end),'XTick',[])
+                        set(EPmain.expandChan.handles.hExpandedAxes(end),'YTick',[])
+                    end
+                    if ismember(iColor,functionData.BOSC.BOSCcolor)
+                        minPlot=0;
+                        maxPlot=1;
+                        minY=functionData.startBins(iColor);
+                        maxY=functionData.lastBins(iColor);
+                    else
+                        minPlot=functionData.plotMVmin;
+                        maxPlot=functionData.plotMVmax;
+                        minY=1;
+                        maxY=length(ySize);
+                    end
+                    EPmain.expandChan.handles.hExpandedAxes(end+1,1) = imagesc(functionData.firstTime:functionData.lastTime,minY:maxY,squeeze(theData(theChan,:,trialList,freqList))',[minPlot, maxPlot]);
+                    axis([functionData.firstTime functionData.lastTime minY maxY]);
+                    line([0 0],[1 length(ySize)],'Color','black','LineWidth',EPmain.preferences.view.lineSize) %stimulus onset
+                    if ~isempty(functionData.marker1)
+                        line(repmat(functionData.marker1,2),[1 length(ySize)],'Color',[.5 .5 .5],'LineWidth',EPmain.preferences.view.lineSize);
+                    end
+                    if ~isempty(functionData.marker2)
+                        line(repmat(functionData.marker2,2),[1 length(ySize)],'Color',[.5 .5 .5],'LineWidth',EPmain.preferences.view.lineSize);
+                    end
+                    %plot event lines
+                    eventX=[];
+                    eventY=[];
+                    for iLine=1:length(functionData.eventLines{iColor})
+                        if ~isempty(functionData.eventLines{iColor}{iLine})
+                            eventX(end+1)=functionData.eventLines{iColor}{iLine};
+                            eventY(end+1)=iLine;
+                        end
+                    end
+                    if ~isempty(eventX)
+                        theTimePoints=[functionData.firstTime:functionData.spacing:functionData.firstTime+(functionData.spacing*(functionData.numPoints-1))];
+                        hold on
+                        plot(theTimePoints(eventX),eventY)
+                        hold off
+                    end
+                end
+            end
+        end
+        if (length(functionData.plotColors)-numImages) > 0 %if there will be waveforms
+            EPmain.expandChan.handles.hExpandedAxes(end+1,1) = axes('position',[.05 .05 .9 .9*((EPmain.numColors-numImages)/EPmain.numColors)]);
+            if ~(EPmain.preferences.view.labelSize > 0)
+                set(EPmain.expandChan.handles.hExpandedAxes(end),'XTick',[])
+                set(EPmain.expandChan.handles.hExpandedAxes(end),'YTick',[])
+            end
+            hold on
+            for iWave=1:length(waveList)
+                theWave=waveList(iWave); %Waves organizes totalData in terms of waves to accommodate -all- options for plotting.
+                theColor=functionData.colorIndex(theWave); %Topos organizes totalData in terms of colors as -all- options are plotted in separate figures on each row.
+                if functionData.complexData
+                    % if strcmp(functionData.plotLineIndex{theWave},':')
+                    %     theMarker='none';
+                    %     theMarkerSize=EPmain.preferences.view.lineSize*2;
+                    % else
+                        theMarker='none';
+                        theMarkerSize=EPmain.preferences.view.lineSize*2;
+                    % end
+                end
+                if functionData.STmode && functionData.STSdata==functionData.colorIndex(iWave)
+                    breakList=sort([find(diff([0 (squeeze(theData(theChan,:,theWave,:))>0) 0])<0)-1 find(diff([0 (squeeze(theData(theChan,:,theWave,:))>0) 0])>0)]);
+                    if ~isempty(breakList)
+                        theSTdata=squeeze(theData(theChan,:,theWave,:));
+                        theData1=squeeze(theData(theChan,:,min(setdiff(waveList,functionData.STSdata)),:));
+                        theData2=squeeze(theData(theChan,:,max(setdiff(waveList,functionData.STSdata)),:));
+                        for iSigArea=1:length(breakList)/2
+                            theTimePoints=[breakList((iSigArea-1)*2+1):breakList(iSigArea*2)];
+                                if isscalar(theTimePoints)
+                                    EPmain.expandChan.handles.hLines{chan}(iWave)=line(([theTimePoints theTimePoints]*spacing)+(functionData.firstTime-spacing),[theData1(theTimePoints) theData2(theTimePoints)],'LineWidth',EPmain.preferences.view.color(theColor).lineSize,'Color',[functionData.plotColorIndex(iWave,:) .25]);
+                                else
+                                    EPmain.expandChan.handles.hLines{chan}(iWave)=patch(([theTimePoints flip(theTimePoints)]*spacing)+(functionData.firstTime-spacing),[theData1(theTimePoints) theData2(flip(theTimePoints))],functionData.plotColorIndex(iWave,:),'FaceColor',functionData.plotColorIndex(iWave,:),'EdgeColor','none','FaceAlpha',.25);
+                                end
+                        end
+                        %                             [A maxPoint]=max(theSTdata);
+                        %                             line([maxPoint maxPoint]*spacing-(functionData.firstTime+spacing),[theData1(maxPoint) theData2(maxPoint)],'Color',functionData.plotColorIndex(iWave,:),'LineWidth',EPmain.preferences.view.color(theColor).lineSize); %maximum sample test point
+                        %                             patch(([theTimePoints flip(theTimePoints)]*spacing)-(functionData.firstTime+spacing),[theData1(theTimePoints) theData2(flip(theTimePoints))],functionData.plotColorIndex(iWave,:),'FaceColor',functionData.plotColorIndex(iWave,:),'EdgeColor','none','FaceAlpha',.5);
+                        
+                    end
+                elseif strcmp('EPwaves',theFunction) && functionData.BSCmode
+                    if functionData.colorIndex(iWave)==functionData.BOSC.dataColor
+                        theTimePoints=[functionData.firstTime:functionData.spacing:functionData.firstTime+(functionData.spacing*(functionData.numPoints-1))];
+                        dataList=find(functionData.colorIndex==functionData.BOSC.dataColor);
+                        dataWave=dataList(iWave);
+                        BOSClist=find(functionData.colorIndex==functionData.BOSC.BOSCcolor);
+                        BOSCwave=BOSClist(iWave);
+                        BSCpoints=squeeze(sum(functionData.totalData(chan,:,BOSCwave,:),4))~=0;
+                        dataPoints=~BSCpoints;
+                        if any(dataPoints)
+                            theData=squeeze(functionData.totalData(chan,:,dataWave,1));
+                            theData(1,BSCpoints)=NaN;
+                            functionData.handles.waves.hLines{chan}(dataWave)=plot(theTimePoints,theData,'LineStyle',functionData.plotLineIndex{dataWave},'color',functionData.plotColorIndex(dataWave,:),'Marker',theMarker,'MarkerSize',theMarkerSize,'LineWidth',EPmain.preferences.view.color(theColor).lineSize);
+                        end
+                        if any(BSCpoints)
+                            theData=squeeze(functionData.totalData(chan,:,dataWave,1));
+                            theData(1,dataPoints)=NaN;
+                            functionData.handles.waves.hLines{chan}(BOSCwave)=plot(theTimePoints,theData,'LineStyle',functionData.plotLineIndex{dataWave},'color',functionData.plotColorIndex(BOSCwave,:),'Marker',theMarker,'MarkerSize',theMarkerSize,'LineWidth',EPmain.preferences.view.color(theColor).lineSize);
+                        end
+                    end
+                else
+                    if strcmp('EPtopos',theFunction)
+                        theTimePoints=[EPtopos.firstTime:spacing:EPtopos.firstTime+(spacing*(EPtopos.numPoints-1))];
+                        EPmain.expandChan.handles.hLines{chan}(iWave)=plot(theTimePoints,squeeze(EPtopos.totalData(theChan,:,theFac,:,:,theColor)),'LineStyle',EPtopos.plotLineIndex{theWave},'color',EPtopos.plotColorIndex(theWave,:),'Marker',theMarker,'MarkerSize',theMarkerSize,'LineWidth',EPmain.preferences.view.color(theColor).lineSize);
+                    else
+                        theTimePoints=[EPwaves.firstTime:spacing:EPwaves.firstTime+(spacing*(EPwaves.numPoints-1))];
+                        EPmain.expandChan.handles.hLines{chan}(iWave)=plot(theTimePoints,squeeze(EPwaves.totalData(theChan,:,theWave,1)),'LineStyle',EPwaves.plotLineIndex{theWave},'color',EPwaves.plotColorIndex(theWave,:),'Marker',theMarker,'MarkerSize',theMarkerSize,'LineWidth',EPmain.preferences.view.color(theColor).lineSize);
+                        if EPwaves.bandIndex(theColor) > 0
+                            breakList=sort([find(diff([0 ~isnan(squeeze(EPwaves.bandData(theChan,:,1,:,theColor))) 0])<0)-1 find(diff([0 ~isnan(squeeze(EPwaves.bandData(theChan,:,1,:,theColor))) 0])>0)]);
+                            for iSigArea=1:length(breakList)/2
+                                theTimePoints=[breakList((iSigArea-1)*2+1):breakList(iSigArea*2)];
+                                theBand1=squeeze(EPwaves.totalData(theChan,theTimePoints,theWave,1))+EPwaves.bandData(theChan,theTimePoints,1,:,theColor);
+                                theBand2=squeeze(EPwaves.totalData(theChan,theTimePoints,theWave,1))-EPwaves.bandData(theChan,theTimePoints,1,:,theColor);
+                                if isscalar(theTimePoints)
+                                    EPmain.expandChan.handles.hLines{chan}(iWave)=line(([theTimePoints theTimePoints]*spacing)+(functionData.firstTime-spacing),[theBand1 theBand2],'LineWidth',EPmain.preferences.view.color(theColor).lineSize,'Color',[1 .5 .5]);
+                                else
+                                    EPmain.expandChan.handles.hLines{chan}(iWave+1)=patch(([theTimePoints flip(theTimePoints)]*spacing)+(functionData.firstTime-spacing),[theBand1 flip(theBand2)],EPwaves.plotColorIndex(iWave,:),'FaceColor',EPwaves.plotColorIndex(iWave,:),'EdgeColor',EPwaves.plotColorIndex(iWave,:),'FaceAlpha',.25);
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+            hold off
+            axis([functionData.firstTime functionData.lastTime functionData.plotMVmin functionData.plotMVmax]);
+            if functionData.direction ==2
+                set(EPmain.expandChan.handles.hExpandedAxes(end),'YDir','reverse')
+            end
+            line([functionData.firstTime functionData.lastTime-functionData.sampleSize],[0 0],'Color','black','LineWidth',EPmain.preferences.view.lineSize) % zero line
+            line([0 0],[0 functionData.plotMVmax],'Color','black','LineWidth',EPmain.preferences.view.lineSize) %stimulus onset
+            
+            if strcmp('EPtopos',theFunction)
+                if EPtopos.complexData && rem(rowCounter,2)
+                    peakPoint=EPtopos.firstTime+(EPtopos.iPoints(rowCounter)-1)*EPtopos.sampleSize;
+                else
+                    peakPoint=EPtopos.firstTime+(EPtopos.points(rowCounter)-1)*EPtopos.sampleSize;
+                end
+                line(repmat(peakPoint,2),[EPtopos.plotMVmin EPtopos.plotMVmax],'Color',[.5 .5 .5],'LineWidth',EPmain.preferences.view.lineSize);
+            end
+            
+            %plot event lines
+            if (functionData.plotMVmin < 0) && (functionData.plotMVmax >= 0)
+                for iColor=1:length(functionData.plotColors)
+                    theColor=functionData.plotColors(iColor);
+                    if strcmp('EPtopos',theFunction) && ~any(strcmp(functionData.type,{'time','freq'}))
+                        theRow=rowCounter;
+                    else
+                        theRow=1;
+                    end
+                    if ~isempty(functionData.eventWave{theColor}) && ~isempty(functionData.eventWave{theColor}{theRow})
+                        plotPoints=find(functionData.eventWave{theColor}{theRow}>min(functionData.eventWave{theColor}{theRow}));
+                        plotTimes=[functionData.firstTime:spacing:functionData.firstTime+(spacing*(functionData.numPoints-1))];
+                        if isscalar(plotPoints)
+                            line([plotTimes(plotPoints) plotTimes(plotPoints)],[functionData.plotMVmin functionData.eventWave{theColor}{theRow}(plotPoints)*(functionData.plotMVmin/2)],'Color',functionData.thePlotColors(iColor,:),'LineWidth',5) %event line
+                        else
+                            hold on
+                            EPmain.expandChan.handles.eventLines{theChan,theColor} = plot(plotTimes,(functionData.eventWave{theColor}{theRow}*(abs(functionData.plotMVmin/2)))+functionData.plotMVmin,'LineWidth',5,'Color',functionData.thePlotColors(iColor,:));
+                            hold off
+                        end
+                    end
+                end
+            end
+        end
+        
+        if EPmain.preferences.view.labelSize > 0
+            text(.01,.8, functionData.chanNames(theChan), 'Units','normalized','FontSize',EPmain.preferences.view.labelSize);
+        end
+        if ~isempty(functionData.marker1)
+            try
+                eval('line(repmat(functionData.marker1,2),[functionData.plotMVmin functionData.plotMVmax],''Color'',[.5 .5 .5],''LineWidth'',EPmain.preferences.view.lineSize)');
+            catch
+            end
+        end
+        if ~isempty(functionData.marker2)
+            try
+                eval('line(repmat(functionData.marker2,2),[functionData.plotMVmin functionData.plotMVmax],''Color'',[.5 .5 .5],''LineWidth'',EPmain.preferences.view.lineSize);');
+            catch
+            end
+        end
+    case 'FFT'
+        numImages=length(find(ismember(EPmain.view.allTrials(1:EPmain.numColors),[2 4 6])));
+        if (length(functionData.plotColors)-numImages) > 0
+            imageSpace=4;
+        else
+            imageSpace=numImages;
+        end
+        EPmain.expandChan.handles.hExpandedAxes=[];
+        if numImages %if any erpimage
+            imageCount=0;
+            for iColor=1:EPmain.numColors
+                if (EPmain.view.dataset(iColor) <= length(EPdataset.dataset)) && ismember(EPmain.view.allTrials(iColor),[2 4 6])
+                    imageCount=imageCount+1;
+                    trialList=find(functionData.colorIndex==iColor);
+                    EPmain.expandChan.handles.hExpandedAxes(end+1,1) = axes('position',[.05 .05+(.9/imageSpace)*(imageSpace-imageCount) .9 (.9/imageSpace)]);
+                    EPmain.expandChan.handles.hExpandedAxes(end+1,1) = imagesc(functionData.firstHz+sampleSize:functionData.lastHz,1:length(trialList),squeeze(theData(theChan,:,trialList,:))',[functionData.plotMVmin, functionData.plotMVmax]);
+                    axis([functionData.firstHz+sampleSize functionData.lastHz 1 length(trialList)]);
+                    if ~isempty(functionData.marker1)
+                        line(repmat(functionData.marker1,2),[1 length(trialList)],'Color',[.5 .5 .5],'LineWidth',EPmain.preferences.view.lineSize);
+                    end
+                    if ~isempty(functionData.marker2)
+                        line(repmat(functionData.marker2,2),[1 length(trialList)],'Color',[.5 .5 .5],'LineWidth',EPmain.preferences.view.lineSize);
+                    end
+                end
+            end
+        end
+        if (length(functionData.plotColors)-numImages) > 0 %if there will be waveforms
+            EPmain.expandChan.handles.hExpandedAxes(end+1,1) = axes('position',[.05 .05 .9 .9*((EPmain.numColors-numImages)/EPmain.numColors)]);
+            hold on
+            for iWave=1:length(waveList)
+                theWave=waveList(iWave);
+                theColor=functionData.colorIndex(theWave); %Topos organizes totalData in terms of colors as -all- options are plotted in separate figures on each row.
+                if strcmp('EPtopos',theFunction) && strcmp(EPtopos.type,'freq')
+                    plot(1:size(theData,1),squeeze(theData(:,:,theWave,theFreq)),'LineStyle',functionData.plotLineIndex{theWave},'color',functionData.plotColorIndex(theWave,:),'LineWidth',EPmain.preferences.view.color(theColor).lineSize);
+                else
+                    plot([functionData.firstHz+sampleSize:spacing:functionData.lastHz],squeeze(theData(theChan,:,theWave,:)),'LineStyle',functionData.plotLineIndex{theWave},'color',functionData.plotColorIndex(theWave,:),'LineWidth',EPmain.preferences.view.color(theColor).lineSize);
+                end
+            end
+            hold off
+            if strcmp('EPtopos',theFunction) && strcmp(EPtopos.type,'freq')
+                axis([1 size(theData,1) functionData.plotMVmin functionData.plotMVmax]);
+            else
+                axis([functionData.firstHz functionData.lastHz functionData.plotMVmin functionData.plotMVmax]);
+                line([functionData.firstHz+sampleSize functionData.lastHz],[0 0],'Color','black','LineWidth',EPmain.preferences.view.lineSize) % zero line
+            end
+        end
+        text(.1,.1, functionData.chanNames(theChan), 'Units','normalized');
+        if ~isempty(functionData.marker1)
+            try
+                eval('line(repmat(functionData.marker1,2),[functionData.plotMVmin functionData.plotMVmax],''Color'',[.5 .5 .5],''LineWidth'',EPmain.preferences.view.lineSize)');
+            catch
+            end
+        end
+        if ~isempty(functionData.marker2)
+            try
+                eval('line(repmat(functionData.marker2,2),[functionData.plotMVmin functionData.plotMVmax],''Color'',[.5 .5 .5],''LineWidth'',EPmain.preferences.view.lineSize);');
+            catch
+            end
+        end
+    case 'TFT'
+        imageSpace=length(functionData.plotColors);
+        imageCount=0;
+        for iColor=1:EPmain.numColors
+            if (EPmain.view.dataset(iColor) <= length(EPdataset.dataset))
+                imageCount=imageCount+1;
+                EPmain.expandChan.handles.hExpandedAxes(iColor) = axes('position',[.05 .05+(.9/imageSpace)*(imageSpace-imageCount) .9 (.9/imageSpace)]);
+                EPmain.expandChan.handles.hExpandedAxes(EPmain.numColors+iColor) = imagesc(functionData.firstTime:functionData.lastTime,functionData.firstHz:functionData.lastHz,squeeze(theData(theChan,:,(functionData.plotColors==iColor),:))');
+                axis([functionData.firstTime functionData.lastTime functionData.firstHz functionData.lastHz]);
+                line([0 0],[functionData.firstHz functionData.lastHz],'Color','black','LineWidth',EPmain.preferences.view.lineSize) %stimulus onset
+                if ~isempty(functionData.marker1)
+                    line(repmat(functionData.marker1,2),[functionData.firstHz functionData.lastHz],'Color',[.5 .5 .5],'LineWidth',EPmain.preferences.view.lineSize);
+                end
+                if ~isempty(functionData.marker2)
+                    line(repmat(functionData.marker2,2),[functionData.firstHz functionData.lastHz],'Color',[.5 .5 .5],'LineWidth',EPmain.preferences.view.lineSize);
+                end
+            end
+        end
+        %text(.1,.1, functionData.chanNames(theChan), 'Units','normalized');
+end
+
+hcmenu = uicontextmenu;
+item1 = uimenu(hcmenu, 'Label', 'Legend', 'Callback', {@ExpandChanLegend,theFunction});
+switch theFunction
+    case 'EPwaves'
+        set(EPmain.expandChan.handles.hExpandedFigure,'UIContextMenu',hcmenu)
+        for iAxes=1:length(EPmain.expandChan.handles.hExpandedAxes)
+            if ishandle(EPmain.expandChan.handles.hExpandedAxes(iAxes))
+                set(EPmain.expandChan.handles.hExpandedAxes(iAxes),'UIContextMenu',hcmenu)
+            end
+        end
+    case 'EPtopos'
+        set(EPmain.expandChan.handles.hExpandedFigure,'UIContextMenu',hcmenu)
+        for iAxes=1:length(EPmain.expandChan.handles.hExpandedAxes)
+            if ishandle(EPmain.expandChan.handles.hExpandedAxes(iAxes))
+                set(EPmain.expandChan.handles.hExpandedAxes(iAxes),'UIContextMenu',hcmenu)
+            end
+        end
+end
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%adds optional legend to expanded channel figure
+function ExpandChanLegend(src, eventdata, theFunction)
+global EPmain EPdataset EPwaves EPtopos
+
+switch theFunction
+    case 'EPwaves'
+        functionData=EPwaves;
+    case 'EPtopos'
+        functionData=EPtopos;
+end
+
+if isfield(EPmain.expandChan.handles,'legendAxes') && ishandle(EPmain.expandChan.handles.legendAxes)
+    delete(EPmain.expandChan.handles.legendAxes)
+else
+    switch theFunction
+        case 'EPwaves'
+            if ishandle(EPmain.expandChan.handles.hExpandedFigure)
+                set(EPmain.expandChan.handles.hExpandedFigure,'DefaultAxesColorOrder',reshape([EPmain.preferences.view.color(find(EPmain.view.dataset(1:EPmain.numColors) <= length(EPdataset.dataset))).RGB],3,[])');
+                EPmain.expandChan.handles.legendAxes = axes('position',[.8 .8 .15 .05],'XTickMode','manual','YTickMode','manual');
+                hold on
+                plot(EPmain.expandChan.handles.legendAxes,[1:2],ones(2,length(find(EPmain.view.dataset(1:EPmain.numColors) <= length(EPdataset.dataset)))),'LineWidth',EPmain.preferences.view.lineSize);
+                EPmain.expandChan.handles.legend = legend('string',functionData.legendNames,'Location',[.8 .8 .15 .05],'Interpreter','none');
+                set(EPmain.expandChan.handles.legend,'ButtonDownFcn',{@ep_expandLegend,theFunction});
+                hold off
+            else
+                disp('There can only be one expanded figure being edited at a time and it has been deleted.')
+            end
+        case 'EPtopos'
+            if ishandle(EPmain.expandChan.handles.hExpandedFigure)
+                set(EPmain.expandChan.handles.hExpandedFigure,'DefaultAxesColorOrder',reshape([EPmain.preferences.view.color(find(EPmain.view.dataset(1:EPmain.numColors) <= length(EPdataset.dataset))).RGB],3,[])');
+                EPmain.expandChan.handles.legendAxes = axes('position',[.8 .8 .15 .05],'XTickMode','manual','YTickMode','manual');
+                hold on
+                plot(EPmain.expandChan.handles.legendAxes,[1:2],ones(2,length(find(EPmain.view.dataset(1:EPmain.numColors) <= length(EPdataset.dataset)))),'LineWidth',EPmain.preferences.view.lineSize);
+                EPmain.expandChan.handles.legend = legend('string',functionData.legendNames,'Location',[.8 .8 .15 .05],'Interpreter','none');
+                set(EPmain.expandChan.handles.legend,'ButtonDownFcn',{@ep_expandLegend,theFunction});
+                hold off
+            else
+                disp('There can only be one expanded figure being edited at a time and it has been deleted.')
+            end
+
+    end
+end

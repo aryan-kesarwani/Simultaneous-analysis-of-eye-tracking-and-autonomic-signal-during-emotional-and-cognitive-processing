@@ -1,0 +1,224 @@
+function [EPdata]=ep_stripAdds(EPdata,types)
+%  [err]=ep_checkEPfile(data,types);
+%       Strips out adds (combined channels, cells, subjects, and factors) to EP data.
+%       If no types are specified, all chan, cell, and factor adds are stripped out and lowest subject level is kept.
+%
+%Inputs:
+%  EPdata         : Structured array with the data and accompanying information in EP file format.  See readData.
+%  types          : Optional cell array of types of information to keep:
+%                   SGLchan (single channels, including EEG, MGM, MGA, MGP, ANS, ECG, PPL, XEY, YEY, BSC, and REF)
+%                   REGchan (regional channels)
+%                   SGLcell (single cells)
+%                   CMBcell (combined cells)
+%                   STScell (sample test statistics output)
+%                   RAW (single trial data)
+%                   AVG (averaged data)
+%                   GAV (grand average data)
+%                   SGLfac (single factors)
+%                   CMBfac (combined factors)
+%
+%Outputs:
+%  EPdata        : Structured array with the data and accompanying information in EP file format.  See readData.
+
+%History:
+%  by Joseph Dien (7/27/09)
+%  jdien07@mac.com
+%
+% modified 2/11/10 JD
+% analysis fields no longer optional.
+%
+%  bugfix 2/15/10 JD
+%  No longer crashes when subject adds are being stripped from data with no subject specs.
+%
+% bugfix 4/24/10 JD
+% Fixed CMB factors not dropped from data when present in .data rather than .facData.
+% 
+%  modified 10/17/10 JD
+%  Added support for saccadeTrials and saccadeOnset fields.
+%
+% modified 2/22/12 JD
+% Noise and std fields no longer optional.  Now set to empty if not used.
+%
+% modified 9/22/13 JD
+% Added support for ECG channel type.
+%
+% modified 10/9/13 JD
+% Added recTime field.
+%
+% bugfix 1/12/14 JD
+% Fixed crash when keeping CMB factors.
+%
+% bugfix 2/27/14 JD
+% Fixed crash when the file has different types of adds in a category (e.g., GAV and AVG in subjects)
+%
+% modified 3/12/14 JD
+% Changed MEG channel type to MGA (axial gradiometer) and MGP (planar gradiometer) and MGM (magnetometer)
+%
+% modified 3/24/14 JD
+% Added .cov field.
+%
+% modified 4/14/14 JD
+% Added .covNum field.
+%
+% modified 5/28/14 JD
+% Added relNames dimension to data to handle coherence and phase-locking measure.
+%
+% modified 6/9/14 JD
+% Added STS cell type and PPL, XEY, and YEY channel types.
+%
+% modified 9/4/15 JD
+% Added trial specs for average files.
+%
+% modified 10/16/16 JD
+% Added .stims field.
+%
+% bugfix 2/27/17 JD
+% Fixed crash when averaging data containing impedance values.
+%
+% modified 2/11/18 JD
+% Added support for stdCM field.
+%
+% bufix & modified 1/7/19 JD
+% Now allows CMB and SGL factors to be intermixed.
+% FacVar and FacVarQ now include CMB factors.
+%
+% modified 4/9/19 JD
+% Added support for task level performance measures.
+%
+% modified 11/4/19 JD
+% Added sessNums sessNames fields.
+%
+% modified 12/24/19 JD
+% Upgraded support of std information by adding .covAVE and .GAVsubs fields and eliminating .std and .stdCM fields.
+% Replaced most of function call with use of ep_selectData.
+%
+% modified 2/26/20 JD
+% Added support for BOSC data.
+%
+% bugfix 10/28/21 JD
+% Fixed dropping all of a dimension when there are no adds.
+%
+% bugfix 4/9/25 JD
+% Fixed dropping all of the factors if all the factors are marked as being kept.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%     Copyright (C) 1999-2025  Joseph Dien
+%
+%     This program is free software: you can redistribute it and/or modify
+%     it under the terms of the GNU General Public License as published by
+%     the Free Software Foundation, either version 3 of the License, or
+%     (at your option) any later version.
+%
+%     This program is distributed in the hope that it will be useful,
+%     but WITHOUT ANY WARRANTY; without even the implied warranty of
+%     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+%     GNU General Public License for more details.
+%
+%     You should have received a copy of the GNU General Public License
+%     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+if (nargin < 1) || isempty(EPdata)
+    msg{1}='No data provided.';
+    [msg]=ep_errorMsg(msg);
+    return
+end
+
+if nargin < 2
+    types{1}='SGLchan';
+end
+
+if isempty(find(ismember(types,{'SGLchan','REGchan'})))
+    types{end+1}='SGLchan'; %at least some type of channel needs to be kept
+end
+
+if isempty(find(ismember(types,{'SGLcell','CMBcell'})))
+    types{end+1}='SGLcell'; %at least some type of cell needs to be kept
+end
+
+if isempty(find(ismember(types,{'RAW','AVG','GAV'})))
+    if ~isempty(find(strcmp('RAW',EPdata.subTypes)))
+        types{end+1}='RAW';
+    elseif ~isempty(find(strcmp('AVG',EPdata.subTypes)))
+        types{end+1}='AVG';
+    else
+        types{end+1}='GAV';
+    end
+end
+
+if isempty(find(ismember(types,{'SGLfac','CMBfac'})))
+    types{end+1}='SGLfac'; %at least some type of factor needs to be kept
+end
+
+keepChans=[];
+chanAdds=[];
+[chanTypes, chanModes, chanRegs]=ep_chanTypes;
+if isempty(find(strcmp('REGchan',types))) %if regional channels not listed as type to keep, then add to list to strip out.
+    chanAdds=[chanAdds; find(ismember(EPdata.chanTypes,unique(chanRegs)))];
+end
+if isempty(find(strcmp('SGLchan',types))) %if single channels not listed as type to keep, then add to list to strip out.
+    chanAdds=[chanAdds; find(ismember(EPdata.chanTypes,unique(chanTypes)))];
+end
+
+keepChans=setdiff([1:length(EPdata.chanNames)],chanAdds);
+
+keepCells=[];
+if ~strcmp(EPdata.dataType,'continuous') %if the data are continuous and keepCells is not empty, will chop up into epochs.
+    cellAdds=[];
+    if isempty(find(strcmp('CMBcell',types)))
+        cellAdds=[cellAdds; find(strcmp('CMB',EPdata.cellTypes))];
+    end
+    if isempty(find(strcmp('SGLcell',types)))
+        cellAdds=[cellAdds; find(strcmp('SGL',EPdata.cellTypes))];
+    end
+    if isempty(find(strcmp('STScell',types)))
+        cellAdds=[cellAdds; find(strcmp('STS',EPdata.cellTypes))];
+    end
+
+    keepCells=setdiff([1:length(EPdata.cellNames)],cellAdds);
+end
+
+keepSubjects=[];
+subAdds=[];
+if isempty(find(strcmp('GAV',types), 1))
+    subAdds=[subAdds; find(strcmp('GAV',EPdata.subTypes))];
+end
+if isempty(find(strcmp('AVG',types), 1))
+    subAdds=[subAdds; find(strcmp('AVG',EPdata.subTypes))];
+end
+if isempty(find(strcmp('RAW',types), 1))
+    subAdds=[subAdds; find(strcmp('RAW',EPdata.subTypes))];
+end
+
+keepSubjects=setdiff([1:length(EPdata.subNames)],subAdds);
+
+keepFacs=[];
+if ~isempty(EPdata.facNames)
+    if ~all(ismember({'SGLfac','CMBfac'},types))
+        SGLfacs=find(strcmp('SGL',EPdata.facTypes));
+        CMBfacs=find(strcmp('CMB',EPdata.facTypes));
+
+        keepFacs=[];
+        if ~isempty(find(strcmp('CMBfac',types)))
+            keepFacs=CMBfacs;
+        end
+        if ~isempty(find(strcmp('SGLfac',types)))
+            keepFacs=[keepFacs SGLfacs];
+        end
+
+        SGLkeepFacs=[];
+        CMBkeepFacs=[];
+        for iFactor=1:length(EPdata.facNames)
+            if strcmp('SGL',EPdata.facTypes{iFactor}) && any(strcmp('SGLfac',types))
+                SGLkeepFacs(end+1)=find(SGLfacs==iFactor);
+            elseif strcmp('CMB',EPdata.facTypes{iFactor}) && any(strcmp('CMBfac',types))
+                CMBkeepFacs(end+1)=find(CMBfacs==iFactor);
+            end
+        end
+    else
+        keepFacs=[1:length(EPdata.facNames)];
+    end
+end
+
+[EPdata]=ep_selectData(EPdata,{keepChans,[],keepCells,keepSubjects,keepFacs,[]});
+
+

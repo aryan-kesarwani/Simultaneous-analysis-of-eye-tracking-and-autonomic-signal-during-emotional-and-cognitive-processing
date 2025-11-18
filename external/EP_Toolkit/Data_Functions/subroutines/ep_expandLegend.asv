@@ -1,0 +1,62 @@
+function ep_expandLegend(src,eventdata,theFunction)
+% ep_expandLegend - ep_expandChan -
+% Expands the Waves Figure legend into a separate box for editing.
+%
+%Input:
+%    theFunction   : type of figure calling this function (EPwaves or EPtopos)
+
+%History
+%  by Joseph Dien (1/26/25)
+%  jdien07@mac.com
+%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%     Copyright (C) 1999-2025  Joseph Dien
+%
+%     This program is free software: you can redistribute it and/or modify
+%     it under the terms of the GNU General Public License as published by
+%     the Free Software Foundation, either version 3 of the License, or
+%     (at your option) any later version.
+%
+%     This program is distributed in the hope that it will be useful,
+%     but WITHOUT ANY WARRANTY; without even the implied warranty of
+%     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+%     GNU General Public License for more details.
+%
+%     You should have received a copy of the GNU General Public License
+%     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+global EPmain EPwaves EPtopos
+
+switch theFunction
+    case 'EPwaves'
+        waveFigure=get(EPwaves.handles.waves.hWaveWindow,'Position');
+    case 'EPtopos'
+        waveFigure=get(EPtopos.handles.topos.topoWindow,'Position');
+end
+
+windowSize=200;
+
+legendNames=get(src,'String');
+
+EPmain.expandChan.handles.expandLegend.figure = figure('Name', 'Edit Legend', 'NumberTitle', 'off', 'MenuBar', 'none', 'Toolbar', 'none',...
+    'Position',[waveFigure(1)+waveFigure(3)-windowSize waveFigure(2)+waveFigure(4)+-windowSize windowSize windowSize]);
+
+EPmain.expandChan.handles.expandLegend.table = uitable('Data',legendNames','ColumnName','Names','FontSize',EPmain.fontsize,...
+    'ColumnEditable', true, 'Position',[10 50 windowSize-20 windowSize-60]);
+
+switch theFunction
+    case 'EPwaves'
+        uicontrol('Style', 'pushbutton', 'String', 'Cancel','FontSize',EPmain.fontsize,...
+            'Position', [20 10 60 30], 'Callback', ['global EPwaves;','close(EPwaves.handles.expandLegend.figure);']);
+        uicontrol('Style', 'pushbutton', 'String', 'Done','FontSize',EPmain.fontsize,...
+            'Position', [90 10 60 30], 'Callback', ['global EPwaves;','legendNames=get(EPmain.expandChan.handles.expandLegend.table,''Data'');','set(EPmain.expandChan.handles.expandLegend,''String'',legendNames);','EPwaves.legendNames=legendNames;','close(EPmain.expandChan.handles.expandLegend.figure);']);
+    case 'EPtopos'
+        uicontrol('Style', 'pushbutton', 'String', 'Cancel','FontSize',EPmain.fontsize,...
+            'Position', [20 10 60 30], 'Callback', ['global EPtopos;','close(EPmain.expandChan.handles.expandLegend.figure);']);
+        uicontrol('Style', 'pushbutton', 'String', 'Done','FontSize',EPmain.fontsize,...
+            'Position', [90 10 60 30], 'Callback', ['global EPtopos;','legendNames=get(EPmain.expandChan.handles.expandLegend.table,''Data'');','set(EPmain.expandChan.handles.legend,''String'',legendNames);','EPtopos.legendNames=legendNames;','close(EPmain.expandChan.handles.legend.figure);']);
+end
+
+
+        
